@@ -708,6 +708,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	// KT Identity 换发：/api/auth/* 前缀天然落在 requireAuth 豁免区，与账密登录互不影响。
+	mux.HandleFunc("POST /api/auth/identity/exchange", s.identityExchange)
 	mux.HandleFunc("GET /api/basic-auth/check", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
@@ -1053,6 +1055,9 @@ func (s *Server) Handler() http.Handler {
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
+	// KT Identity 反代：浏览器同源访问 /identity/* 即 {IDENTITY_LOGIN_URL}/identity/*，免 CORS。
+	// 必须挂在顶层 mux（内层 mux 只在 /api/ 下生效），且长于 "/" 的模式会优先生效。
+	root.HandleFunc("/identity/", s.identityProxy)
 	root.Handle("/", s.webuiHandler())
 	return s.requireBasicAuth(root)
 }

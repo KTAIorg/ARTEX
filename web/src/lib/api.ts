@@ -52,8 +52,6 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
-  RepeaterSendRequest,
-  RepeaterSendResponse,
   IntelligencePage,
   IntentAsset,
   InterceptApprovalFilter,
@@ -83,6 +81,8 @@ import type {
   NotificationMeta,
   PromptVar,
   PromptVersion,
+  RepeaterSendRequest,
+  RepeaterSendResponse,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -91,6 +91,7 @@ import type {
   SSProject,
   SSTask,
   Stats,
+  SystemMetrics,
   Task,
   TaskArchive,
   TaskArchivePage,
@@ -119,7 +120,6 @@ import type {
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
-  SystemMetrics,
 } from "@/lib/types";
 
 function getToken(): string | null {
@@ -301,6 +301,8 @@ export const api = {
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  // KT Identity 换发：拿 identity opaque token 换 ARTEX 自己的 JWT（与账密登录产物同构）。
+  identityExchange: (token: string) => post<{ token: string }>("/auth/identity/exchange", { token }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -372,11 +374,19 @@ export const api = {
     }),
   taskTemplates: () => get<{ templates: TaskTemplate[] }>("/task-templates").then((r) => arr(r.templates)),
   createTaskTemplate: (
-    input: Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">,
+    input: Pick<
+      TaskTemplate,
+      "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+    >,
   ) => post<TaskTemplate>("/task-templates", input),
   updateTaskTemplate: (
     id: number,
-    input: Partial<Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">>,
+    input: Partial<
+      Pick<
+        TaskTemplate,
+        "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+      >
+    >,
   ) => patch<TaskTemplate>(`/task-templates/${id}`, input),
   deleteTaskTemplate: (id: number) => del<{ deleted: number }>(`/task-templates/${id}`),
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
@@ -1313,11 +1323,13 @@ export const api = {
       total: r.total ?? 0,
     }));
   },
-  kvSync: (body: KTVulnFilters & {
-    import_domains?: boolean; // hostnames 落成 subdomain 资产，默认 true
-    max_assets?: number; // 单次同步上限，默认 5000
-    create_company?: boolean; // 按业务类型聚合公司并写入资产范围，默认 true
-  }) =>
+  kvSync: (
+    body: KTVulnFilters & {
+      import_domains?: boolean; // hostnames 落成 subdomain 资产，默认 true
+      max_assets?: number; // 单次同步上限，默认 5000
+      create_company?: boolean; // 按业务类型聚合公司并写入资产范围，默认 true
+    },
+  ) =>
     post<{
       synced: Record<string, number>; // http_service | other_service | subdomain
       fetched: number;
