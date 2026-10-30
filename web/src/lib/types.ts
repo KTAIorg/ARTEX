@@ -1501,6 +1501,8 @@ export interface KTVulnAsset {
   score?: number | null; // 价值分 0-100
   tier?: string | null; // A/B/C/D/E
   biz_type?: string | null; // 业务类型标签（盗U盘 / VPN平台 …）
+  engagement_status?: string | null; // 作业状态 todo | claimed | in_progress | …
+  engagement_owner?: string | null; // 协同负责人
 }
 
 // kt-vuln 资产筛选（透传 GET /api/assets 支持的查询参数子集）。
@@ -1520,6 +1522,23 @@ export interface KTVulnStats {
   cves_total: number;
   assessments_total: number;
   findings_total: number;
+}
+
+// kt-vuln 同步随服务资产写入 assets.extra->'ktvuln' 的协同维度子树。
+export interface KTVulnExtra {
+  score?: number; // 价值分 0-100
+  tier?: string; // A/B/C/D/E
+  biz_type?: string; // 业务类型标签
+  engagement_status?: string; // 作业状态
+  verdict?: string; // 判定
+  engagement_owner?: string; // 协同负责人
+  synced_at?: string; // 最近同步时间（RFC3339）
+}
+
+// ktVulnOf 安全取出 Asset.extra.ktvuln 子树；不存在或形状不对时返回 null。
+export function ktVulnOf(a: Asset): KTVulnExtra | null {
+  const v = a.extra?.ktvuln;
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as KTVulnExtra) : null;
 }
 
 // ConvTokenSummary — one conversation's token total (+ profile/date) for merging

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +44,9 @@ import (
 //     级联生成 root_domain/subdomain/ip 资产，ip 资产由 store 内部落库，不单独计数）
 //   - 无 scheme → UpsertOtherService（ip:port，组件名作 service_name）
 //   - 其余 hostname → UpsertSubdomain
+//   - 协同维度（score/tier/biz_type/engagement_status/verdict/engagement_owner）
+//     写入服务资产 extra.ktvuln 子树（subdomain/ip 资产不带）；同步默认按业务
+//     类型聚合成公司「ktvuln:<业务类型>」并落 scope（IP+非 IP hostname）
 
 const (
 	kvSettingURL     = "sync.ktvuln.url"
@@ -457,6 +461,7 @@ type kvSyncReq struct {
 	// 入库选项
 	ImportDomains *bool `json:"import_domains"` // hostnames 落成 subdomain 资产，默认 true
 	MaxAssets     int   `json:"max_assets"`     // 单次同步上限，默认 5000，上限 50000
+	CreateCompany *bool `json:"create_company"` // 按业务类型聚合并建公司 scope，默认 true
 }
 
 // kvAsset 是 kt-vuln /api/assets 返回的资产行（只声明入库用到的字段）。
@@ -469,6 +474,14 @@ type kvAsset struct {
 	PhpVersion *string  `json:"php_version"`
 	Component  *string  `json:"component"`
 	Version    *string  `json:"version"`
+	// 协同维度（二期）：整体写入服务资产的 extra.ktvuln 子树，供 DSL 筛选与
+	// 前端展示；biz_type/engagement_owner 是可空字段，nil 表示上游未标注。
+	Score            int     `json:"score"`             // 价值分 0-100
+	Tier             string  `json:"tier"`              // 价值分层 A-E
+	BizType          *string `json:"biz_type"`          // 业务类型（盗U盘/VPN平台/…，可空）
+	EngagementStatus string  `json:"engagement_status"` // 作业状态 todo/…
+	Verdict          string  `json:"verdict"`           // 判定 vulnerable/patched/…
+	EngagementOwner  *string `json:"engagement_owner"`  // 作业负责人（可空）
 }
 
 func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
@@ -498,6 +511,10 @@ func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
 	importDomains := true
 	if req.ImportDomains != nil {
 		importDomains = *req.ImportDomains
+	}
+	createCompany := true
+	if req.CreateCompany != nil {
+		createCompany = *req.CreateCompany
 	}
 
 	q := url.Values{}
@@ -531,6 +548,7 @@ func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
 
 	fetched, truncated := 0, false
 	var remoteTotal int64
+	var groupItems []kvAsset // 通过 ip:port 守卫的资产，供按业务类型聚合公司
 	for offset := 0; ; offset += kvPageLimit {
 		if fetched >= maxAssets {
 			truncated = true
@@ -555,6 +573,9 @@ func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			fetched++
+			if it.IP != "" && it.Port > 0 {
+				groupItems = append(groupItems, it)
+			}
 			if e := kvIngest(as, it, importDomains, synced); e != "" {
 				addErr(e)
 			}
@@ -570,6 +591,42 @@ func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
 		warnings = append(warnings, fmt.Sprintf("另有 %d 条错误未展示", errCount-len(errs)))
 	}
 
+	// 按业务类型聚合公司：业务类型 → 公司「ktvuln:<业务类型>」，scope 行取资产
+	// IP + 全部非 IP hostname。scope 规则落库后重算归因，让已有资产也挂上公司。
+	companies := []string{}
+	scopeAdded := 0
+	if createCompany && len(groupItems) > 0 {
+		cs := s.companyStore()
+		if cs == nil {
+			writeErr(w, 503, "database unavailable")
+			return
+		}
+		groups := kvGroupCompanies(groupItems)
+		for name := range groups {
+			companies = append(companies, name)
+		}
+		sort.Strings(companies)
+		for _, name := range companies {
+			cid, err := cs.UpsertByName(name)
+			if err != nil {
+				addErr("公司创建失败 " + name + ": " + err.Error())
+				continue
+			}
+			lines := groups[name]
+			for i := 0; i < len(lines); i += 200 {
+				end := min(i+200, len(lines))
+				added, _, _, scopeErrs := cs.AddScope(cid, lines[i:end], name)
+				scopeAdded += added
+				warnings = append(warnings, scopeErrs...)
+			}
+		}
+		if len(companies) > 0 {
+			if err := cs.RecomputeAttribution(); err != nil {
+				addErr("公司归因重算失败: " + err.Error())
+			}
+		}
+	}
+
 	writeJSON(w, 200, map[string]any{
 		"synced":       synced,
 		"fetched":      fetched,
@@ -577,6 +634,8 @@ func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
 		"truncated":    truncated,
 		"warnings":     warnings,
 		"errors":       errs,
+		"companies":    companies,
+		"scope_added":  scopeAdded,
 	})
 }
 
@@ -586,6 +645,7 @@ func kvIngest(as *db.AssetStore, it kvAsset, importDomains bool, synced map[stri
 	if it.IP == "" || it.Port <= 0 {
 		return "" // ip:port 是 kt-vuln 的资产主键维度，正常不会缺
 	}
+	now := time.Now()
 	scheme := ""
 	if it.Scheme != nil {
 		scheme = strings.ToLower(*it.Scheme)
@@ -613,6 +673,7 @@ func kvIngest(as *db.AssetStore, it kvAsset, importDomains bool, synced map[stri
 		}
 		if _, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{
 			URL: svcURL, Technologies: kvTechnologies(it), PageTitle: kvStr(it.Title), IP: it.IP,
+			Extra: kvExtraPatch(it, now),
 		}); err != nil {
 			return "http_service " + svcURL + ": " + err.Error()
 		}
@@ -620,6 +681,7 @@ func kvIngest(as *db.AssetStore, it kvAsset, importDomains bool, synced map[stri
 	default:
 		if _, err := as.UpsertOtherService(db.UpsertOtherServiceReq{
 			IP: it.IP, Port: it.Port, ServiceName: kvServiceName(it),
+			Extra: kvExtraPatch(it, now),
 		}); err != nil {
 			return fmt.Sprintf("other_service %s:%d: %v", it.IP, it.Port, err)
 		}
@@ -637,6 +699,72 @@ func kvIngest(as *db.AssetStore, it kvAsset, importDomains bool, synced map[stri
 		synced["subdomain"]++
 	}
 	return ""
+}
+
+// kvExtraPatch 把协同维度字段组装成写入 assets.extra 的补丁：整体替换
+// extra.ktvuln 子树（db 层顶层 || 合并，不动其他来源的 key）。空字符串/零值
+// 字段省略，synced_at 记本次同步时间（RFC3339）。
+func kvExtraPatch(it kvAsset, syncedAt time.Time) map[string]any {
+	sub := map[string]any{}
+	if it.Score != 0 {
+		sub["score"] = it.Score
+	}
+	if it.Tier != "" {
+		sub["tier"] = it.Tier
+	}
+	if v := strings.TrimSpace(kvStr(it.BizType)); v != "" {
+		sub["biz_type"] = v
+	}
+	if it.EngagementStatus != "" {
+		sub["engagement_status"] = it.EngagementStatus
+	}
+	if it.Verdict != "" {
+		sub["verdict"] = it.Verdict
+	}
+	if v := strings.TrimSpace(kvStr(it.EngagementOwner)); v != "" {
+		sub["engagement_owner"] = v
+	}
+	sub["synced_at"] = syncedAt.Format(time.RFC3339)
+	return map[string]any{"ktvuln": sub}
+}
+
+// kvGroupCompanies 按业务类型把资产聚成公司 scope 行：公司名
+// 「ktvuln:<业务类型>」（业务类型为空归「未分类」），每个公司的 lines 是
+// 其资产 IP + 全部非 IP hostname，公司内去重并排序。输入应已过 ip:port 守卫，
+// 这里再防一层（与入库口径一致）。
+func kvGroupCompanies(items []kvAsset) map[string][]string {
+	sets := map[string]map[string]struct{}{}
+	for _, it := range items {
+		if it.IP == "" || it.Port <= 0 {
+			continue
+		}
+		display := strings.TrimSpace(kvStr(it.BizType))
+		if display == "" {
+			display = "未分类"
+		}
+		name := "ktvuln:" + display
+		set, ok := sets[name]
+		if !ok {
+			set = map[string]struct{}{}
+			sets[name] = set
+		}
+		set[it.IP] = struct{}{}
+		for _, h := range it.Hostnames {
+			if h = strings.TrimSpace(h); h != "" && net.ParseIP(h) == nil {
+				set[h] = struct{}{}
+			}
+		}
+	}
+	out := make(map[string][]string, len(sets))
+	for name, set := range sets {
+		lines := make([]string, 0, len(set))
+		for line := range set {
+			lines = append(lines, line)
+		}
+		sort.Strings(lines)
+		out[name] = lines
+	}
+	return out
 }
 
 // kvTechnologies 把组件/版本/PHP 拼成 technologies 列表（php 资产 component 为空）。

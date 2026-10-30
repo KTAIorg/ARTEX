@@ -1316,12 +1316,15 @@ export const api = {
   kvSync: (body: KTVulnFilters & {
     import_domains?: boolean; // hostnames 落成 subdomain 资产，默认 true
     max_assets?: number; // 单次同步上限，默认 5000
+    create_company?: boolean; // 按业务类型聚合公司并写入资产范围，默认 true
   }) =>
     post<{
       synced: Record<string, number>; // http_service | other_service | subdomain
       fetched: number;
       remote_total: number;
       truncated: boolean;
+      companies: string[] | null; // 聚合触达的公司名列表（ktvuln:业务类型）
+      scope_added: number | null; // 公司资产范围新增条数
       warnings: string[] | null;
       errors: string[] | null;
     }>("/sync/ktvuln/sync", body),

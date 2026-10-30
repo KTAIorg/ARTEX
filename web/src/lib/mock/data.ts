@@ -379,6 +379,17 @@ export const assets: Asset[] = [
     port: 443,
     service_type: "https",
     service_name: "nginx/1.24.0",
+    extra: {
+      ktvuln: {
+        score: 92,
+        tier: "A",
+        biz_type: "盗U盘",
+        engagement_status: "todo",
+        verdict: "vulnerable",
+        engagement_owner: "小艾",
+        synced_at: T("2026-10-30T08:00:00Z"),
+      },
+    },
     last_seen: T("2026-07-26T02:07:00Z"),
   },
   {
@@ -538,6 +549,15 @@ export const assets: Asset[] = [
     port: 8080,
     service_type: "http",
     service_name: "Jenkins 2.289",
+    extra: {
+      ktvuln: {
+        score: 74,
+        tier: "C",
+        engagement_status: "claimed",
+        verdict: "unknown",
+        synced_at: T("2026-10-30T08:00:00Z"),
+      },
+    },
     last_seen: T("2026-07-25T21:35:00Z"),
   },
   {
@@ -4269,6 +4289,8 @@ export const ktvulnAssets: KTVulnAsset[] = [
     tier: "A",
     verdict: "executable",
     biz_type: "盗U盘",
+    engagement_status: "todo",
+    engagement_owner: "小艾",
     hostnames: ["wallet-demo.example.com", "api.wallet-demo.example.com"],
     country: "US",
   },
@@ -4282,6 +4304,7 @@ export const ktvulnAssets: KTVulnAsset[] = [
     tier: "A",
     verdict: "vulnerable",
     biz_type: "VPN平台",
+    engagement_status: "claimed",
     hostnames: ["vpn-demo.example.com"],
     component: "tomcat",
     version: "9.0.31",
@@ -4296,6 +4319,7 @@ export const ktvulnAssets: KTVulnAsset[] = [
     tier: "B",
     verdict: "executable",
     biz_type: "资金盘",
+    engagement_status: "in_progress",
     hostnames: ["pay-demo.example.com", "gateway.pay-demo.example.com"],
     php_version: "7.4.3",
   },
@@ -4308,6 +4332,7 @@ export const ktvulnAssets: KTVulnAsset[] = [
     tier: "C",
     verdict: "unknown",
     biz_type: "盗U盘",
+    engagement_status: "todo",
     hostnames: [],
   },
   {

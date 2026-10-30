@@ -399,6 +399,142 @@ func TestKVTokenLoginFailure(t *testing.T) {
 	}
 }
 
+// TestKVAssetDimensionFields 用 httptest 假 kt-vuln 验证资产行的协同维度字段
+// （score/tier/biz_type/engagement_status/verdict/engagement_owner）能正确解码，
+// 含 biz_type/engagement_owner 为 null 的行。
+func TestKVAssetDimensionFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items": [
+  {"ip": "1.2.3.4", "port": 443, "scheme": "https", "title": "Login",
+   "hostnames": ["a.example.com"], "component": "Nginx", "version": "1.25",
+   "score": 92, "tier": "A", "biz_type": "盗U盘",
+   "engagement_status": "todo", "verdict": "vulnerable", "engagement_owner": "张三"},
+  {"ip": "5.6.7.8", "port": 22, "hostnames": [], "score": 0, "tier": "",
+   "biz_type": null, "engagement_status": "", "verdict": "patched", "engagement_owner": null}
+], "total": 2}`))
+	}))
+	defer srv.Close()
+	kv := kvSource{baseURL: srv.URL, token: "tok"}
+
+	var page struct {
+		Items []kvAsset `json:"items"`
+		Total int64     `json:"total"`
+	}
+	if err := kvGet(context.Background(), kv, "/api/assets", nil, &page); err != nil {
+		t.Fatalf("kvGet: %v", err)
+	}
+	if len(page.Items) != 2 || page.Total != 2 {
+		t.Fatalf("分页信封: want 2 items/total=2, got %d/%d", len(page.Items), page.Total)
+	}
+	full := page.Items[0]
+	if full.Score != 92 || full.Tier != "A" {
+		t.Fatalf("score/tier: want 92/A, got %d/%q", full.Score, full.Tier)
+	}
+	if got := kvStr(full.BizType); got != "盗U盘" {
+		t.Fatalf("biz_type: want 盗U盘, got %q", got)
+	}
+	if full.EngagementStatus != "todo" || full.Verdict != "vulnerable" {
+		t.Fatalf("engagement_status/verdict: want todo/vulnerable, got %q/%q", full.EngagementStatus, full.Verdict)
+	}
+	if got := kvStr(full.EngagementOwner); got != "张三" {
+		t.Fatalf("engagement_owner: want 张三, got %q", got)
+	}
+	bare := page.Items[1]
+	if bare.BizType != nil || bare.EngagementOwner != nil {
+		t.Fatalf("null 可空字段应解成 nil 指针: biz_type=%v owner=%v", bare.BizType, bare.EngagementOwner)
+	}
+	if bare.Verdict != "patched" {
+		t.Fatalf("verdict: want patched, got %q", bare.Verdict)
+	}
+}
+
+// TestKVExtraPatch 覆盖维度→extra 补丁：字段齐全、全空零值、指针指向空串。
+func TestKVExtraPatch(t *testing.T) {
+	syncedAt := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+
+	full := kvAsset{
+		Score: 92, Tier: "A", BizType: strPtr("盗U盘"),
+		EngagementStatus: "todo", Verdict: "vulnerable", EngagementOwner: strPtr("张三"),
+	}
+	patch := kvExtraPatch(full, syncedAt)
+	sub, ok := patch["ktvuln"].(map[string]any)
+	if !ok {
+		t.Fatalf("补丁缺 ktvuln 子树: %v", patch)
+	}
+	want := map[string]any{
+		"score": 92, "tier": "A", "biz_type": "盗U盘",
+		"engagement_status": "todo", "verdict": "vulnerable",
+		"engagement_owner": "张三", "synced_at": syncedAt.Format(time.RFC3339),
+	}
+	if len(sub) != len(want) {
+		t.Fatalf("字段齐全: want %d 个 key, got %d (%v)", len(want), len(sub), sub)
+	}
+	for k, v := range want {
+		if sub[k] != v {
+			t.Fatalf("字段齐全 %s: want %v, got %v", k, v, sub[k])
+		}
+	}
+
+	empty := kvExtraPatch(kvAsset{}, syncedAt)
+	sub, ok = empty["ktvuln"].(map[string]any)
+	if !ok {
+		t.Fatalf("空资产补丁缺 ktvuln 子树: %v", empty)
+	}
+	if len(sub) != 1 || sub["synced_at"] != syncedAt.Format(time.RFC3339) {
+		t.Fatalf("空资产应只剩 synced_at: %v", sub)
+	}
+
+	// 指针非 nil 但指向空串：与 nil 同样按「未标注」省略。
+	blank := kvExtraPatch(kvAsset{BizType: strPtr(""), EngagementOwner: strPtr(" ")}, syncedAt)
+	sub, _ = blank["ktvuln"].(map[string]any)
+	if _, exists := sub["biz_type"]; exists {
+		t.Fatalf("空串 biz_type 应省略: %v", sub)
+	}
+	if _, exists := sub["engagement_owner"]; exists {
+		t.Fatalf("空串 engagement_owner 应省略: %v", sub)
+	}
+}
+
+// TestKVGroupCompanies 覆盖按业务类型聚合：空 biz 归「未分类」、公司内去重、
+// IP 型 hostname 剔除、未过 ip:port 守卫的资产不参与。
+func TestKVGroupCompanies(t *testing.T) {
+	groups := kvGroupCompanies([]kvAsset{
+		{IP: "1.2.3.4", Port: 443, BizType: strPtr("盗U盘"),
+			Hostnames: []string{"a.example.com", "1.2.3.4", "b.example.com"}},
+		{IP: "1.2.3.4", Port: 8443, BizType: strPtr("盗U盘"),
+			Hostnames: []string{"a.example.com"}},
+		{IP: "5.6.7.8", Port: 22, Hostnames: []string{"c.example.com", "  ", "5.6.7.8"}},
+		{IP: "9.9.9.9", Port: 80, Hostnames: []string{"9.9.9.9"}},
+		{IP: "", Port: 443, BizType: strPtr("盗U盘")},      // 无 IP，守卫拦下
+		{IP: "9.9.9.9", Port: 0, BizType: strPtr("盗U盘")}, // 无端口，守卫拦下
+	})
+	want := map[string][]string{
+		"ktvuln:盗U盘": {"1.2.3.4", "a.example.com", "b.example.com"},
+		"ktvuln:未分类": {"5.6.7.8", "9.9.9.9", "c.example.com"},
+	}
+	if len(groups) != len(want) {
+		t.Fatalf("公司分组: want %v, got %v", want, groups)
+	}
+	for name, lines := range want {
+		got := groups[name]
+		if len(got) != len(lines) {
+			t.Fatalf("公司 %s lines: want %v, got %v", name, lines, got)
+		}
+		for i := range lines {
+			if got[i] != lines[i] {
+				t.Fatalf("公司 %s lines[%d]: want %q, got %q（含排序）", name, i, lines[i], got[i])
+			}
+		}
+	}
+	if got := kvGroupCompanies(nil); len(got) != 0 {
+		t.Fatalf("空输入应返回空分组: %v", got)
+	}
+}
+
+// strPtr 造 *string 字面量（测试辅助）。
+func strPtr(s string) *string { return &s }
+
 // TestKVAuthMode 覆盖 auth_mode / configured 在 env×静态 token 各组合下的判定。
 func TestKVAuthMode(t *testing.T) {
 	cases := []struct {

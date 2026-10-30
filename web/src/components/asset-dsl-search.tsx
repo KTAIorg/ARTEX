@@ -157,6 +157,54 @@ const DSL_FIELDS: { name: string; desc: string; ops: { op: string; desc: string 
     ],
   },
   {
+    name: "kv_score",
+    desc: "kt-vuln 价值分（0-100 整数）",
+    ops: [
+      { op: "==", desc: "等于" },
+      { op: "!=", desc: "不等于" },
+      { op: ">", desc: "大于" },
+      { op: ">=", desc: "大于等于" },
+      { op: "<", desc: "小于" },
+      { op: "<=", desc: "小于等于" },
+    ],
+  },
+  {
+    name: "kv_tier",
+    desc: "kt-vuln 价值等级 A-E",
+    ops: [
+      { op: "=", desc: "模糊匹配" },
+      { op: "==", desc: "精确匹配" },
+      { op: "!=", desc: "排除" },
+    ],
+  },
+  {
+    name: "kv_biz_type",
+    desc: "kt-vuln 业务类型（盗U盘 / VPN平台 …）",
+    ops: [
+      { op: "=", desc: "模糊匹配" },
+      { op: "==", desc: "精确匹配" },
+      { op: "!=", desc: "排除" },
+    ],
+  },
+  {
+    name: "kv_engagement",
+    desc: "kt-vuln 作业状态 todo/claimed/…",
+    ops: [
+      { op: "=", desc: "模糊匹配" },
+      { op: "==", desc: "精确匹配" },
+      { op: "!=", desc: "排除" },
+    ],
+  },
+  {
+    name: "kv_verdict",
+    desc: "kt-vuln 判定 vulnerable/patched/…",
+    ops: [
+      { op: "=", desc: "模糊匹配" },
+      { op: "==", desc: "精确匹配" },
+      { op: "!=", desc: "排除" },
+    ],
+  },
+  {
     name: "status_code",
     desc: "HTTP 状态码（整数）",
     ops: [

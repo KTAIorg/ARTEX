@@ -224,6 +224,19 @@ func marshalStringArray(items []string) string {
 	return "{" + strings.Join(escaped, ",") + "}"
 }
 
+// marshalJSONBObj 序列化 extra 这类单对象 jsonb 列；nil 映射为 "{}"（json.Marshal
+// 对 nil map 会产出 null，而 assets.extra 是 NOT NULL）。
+func marshalJSONBObj(m map[string]any) (string, error) {
+	if m == nil {
+		return "{}", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 func marshalPortServices(ps []PortService) (string, error) {
 	items := make([]map[string]any, len(ps))
 	for i, p := range ps {
@@ -676,6 +689,7 @@ type UpsertHTTPServiceReq struct {
 	Auth          []map[string]any
 	IP            string // optional, from async DNS
 	TaskID        int64
+	Extra         map[string]any // optional jsonb patch, 顶层 || 合并进 assets.extra
 }
 
 // UpsertHTTPService inserts or merges an HTTP service asset. Domain, port,
@@ -717,6 +731,10 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
+	extraJSON, err := marshalJSONBObj(req.Extra)
+	if err != nil {
+		return 0, err
+	}
 
 	var domainVal, ipVal, csegVal, titleVal, faviconVal any
 	if domain != "" {
@@ -740,12 +758,12 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 INSERT INTO assets(
     type, url, service_type, service_name, domain, ip, port, root_domain,
     c_segment, favicon_mmh3, technologies, status_code, content_length, page_title,
-    auth, company_id, company_source, task_ids
+    auth, company_id, company_source, task_ids, extra
 )
 VALUES (
     'service', $1, 'http', $2, $3, $4, $5, $6,
     $7::cidr, $8, $9::text[], $10, $11, $12,
-    $13::jsonb[], $14, 'scope', $15::bigint[]
+    $13::jsonb[], $14, 'scope', $15::bigint[], $16::jsonb
 )
 ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
     status_code    = COALESCE(EXCLUDED.status_code,    assets.status_code),
@@ -771,11 +789,12 @@ ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
+    extra          = assets.extra || EXCLUDED.extra,
     last_seen      = now()
 RETURNING id`,
 		normURL, serviceName, domainVal, ipVal, nullableInt(port), rootDomain,
 		csegVal, faviconVal, techsArr, req.StatusCode, req.ContentLength, titleVal,
-		authJSON, companyID, taskIDs,
+		authJSON, companyID, taskIDs, extraJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, err
@@ -814,6 +833,7 @@ type UpsertOtherServiceReq struct {
 	ServiceName string
 	Auth        []map[string]any
 	TaskID      int64
+	Extra       map[string]any // optional jsonb patch, 顶层 || 合并进 assets.extra
 }
 
 // UpsertOtherService inserts or merges a non-HTTP service asset.
@@ -865,6 +885,10 @@ func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error
 	if err != nil {
 		return 0, err
 	}
+	extraJSON, err := marshalJSONBObj(req.Extra)
+	if err != nil {
+		return 0, err
+	}
 
 	var domainVal, rootDomainVal, ipVal, csegVal any
 	if domain != "" {
@@ -884,9 +908,9 @@ func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error
 	err = s.tx.QueryRow(`
 INSERT INTO assets(
     type, service_type, service_name, domain, ip, port, root_domain,
-    c_segment, auth, company_id, company_source, task_ids
+    c_segment, auth, company_id, company_source, task_ids, extra
 )
-VALUES ('service', 'other', $1, $2, $3, $4, $5, $6::cidr, $7::jsonb[], $8, 'scope', $9::bigint[])
+VALUES ('service', 'other', $1, $2, $3, $4, $5, $6::cidr, $7::jsonb[], $8, 'scope', $9::bigint[], $10::jsonb)
 ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE type = 'service' AND service_type = 'other' DO UPDATE SET
     domain     = COALESCE(EXCLUDED.domain,     assets.domain),
     ip         = COALESCE(EXCLUDED.ip,         assets.ip),
@@ -907,10 +931,11 @@ ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE typ
         WHEN EXCLUDED.company_id IS NOT NULL THEN 'scope'
         ELSE assets.company_source
     END,
+    extra      = assets.extra || EXCLUDED.extra,
     last_seen  = now()
 RETURNING id`,
 		serviceName, domainVal, ipVal, req.Port, rootDomainVal,
-		csegVal, authJSON, companyID, taskIDs,
+		csegVal, authJSON, companyID, taskIDs, extraJSON,
 	).Scan(&id)
 	if err != nil {
 		return 0, err

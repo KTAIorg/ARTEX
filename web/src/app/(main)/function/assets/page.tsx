@@ -63,6 +63,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
+import { ktVulnOf } from "@/lib/types";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -99,6 +100,128 @@ function statusTone(code: number) {
 }
 
 const PAGE_SIZES = [25, 50, 100, 200];
+
+// ── kt-vuln 协同维度（assets.extra.ktvuln，随同步写入）────────────────────────
+
+const KV_TIERS = ["A", "B", "C", "D", "E"];
+const KV_ENGAGEMENTS: { value: string; label: string }[] = [
+  { value: "todo", label: "待处理" },
+  { value: "claimed", label: "已认领" },
+  { value: "in_progress", label: "进行中" },
+  { value: "done_hit", label: "已命中" },
+  { value: "done_miss", label: "未命中" },
+  { value: "blocked", label: "受阻" },
+  { value: "excluded", label: "已排除" },
+];
+
+// 价值列：tier 徽章 + 分数（如 A·92）。A/B 是高价值目标，用醒目色。
+const KV_TIER_TONE: Record<string, string> = {
+  A: "bg-rose-600 hover:bg-rose-600",
+  B: "bg-amber-500 hover:bg-amber-500",
+};
+
+function KVValueBadge({ tier, score }: { tier?: string; score?: number }) {
+  if (!tier) return <span className="font-mono text-xs tabular-nums">{score ?? "—"}</span>;
+  const tone = KV_TIER_TONE[tier] ?? "";
+  return (
+    <Badge variant={tone ? "default" : "outline"} className={cn("font-mono text-[10px]", tone)}>
+      {tier}
+      {score != null ? `·${score}` : ""}
+    </Badge>
+  );
+}
+
+// DSL 值没有转义语法（readToken 的引号即边界）：去掉值里的引号，含空白/括号时整体加引号。
+function kvDslValue(v: string): string {
+  const clean = v.replaceAll('"', "");
+  return /[\s()]/.test(clean) ? `"${clean}"` : clean;
+}
+
+// 服务 tab 的 kt-vuln 快捷筛选：条件拼成 kv_* DSL 填进上方 DSL 搜索框并触发查询。
+function KVQuickFilter({ onApply }: { onApply: (dsl: string) => void }) {
+  const [minScore, setMinScore] = React.useState("");
+  const [tier, setTier] = React.useState("all");
+  const [bizType, setBizType] = React.useState("");
+  const [engagement, setEngagement] = React.useState("all");
+
+  const apply = () => {
+    const parts: string[] = [];
+    const score = Number.parseInt(minScore.trim(), 10);
+    if (minScore.trim() !== "" && Number.isFinite(score)) parts.push(`kv_score>=${score}`);
+    if (tier !== "all") parts.push(`kv_tier==${tier}`);
+    if (bizType.trim() !== "") parts.push(`kv_biz_type==${kvDslValue(bizType.trim())}`);
+    if (engagement !== "all") parts.push(`kv_engagement==${engagement}`);
+    if (parts.length === 0) return toast.error("请至少填写一个筛选条件");
+    onApply(parts.join(" AND "));
+  };
+
+  const clear = () => {
+    setMinScore("");
+    setTier("all");
+    setBizType("");
+    setEngagement("all");
+    onApply("");
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-muted-foreground text-xs">kt-vuln：</span>
+      <Input
+        className="h-8 w-24"
+        type="number"
+        min={0}
+        max={100}
+        placeholder="分数 ≥"
+        value={minScore}
+        onChange={(e) => setMinScore(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") apply();
+        }}
+      />
+      <Select value={tier} onValueChange={setTier}>
+        <SelectTrigger size="sm" className="w-24">
+          <SelectValue placeholder="等级" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">全部等级</SelectItem>
+          {KV_TIERS.map((t) => (
+            <SelectItem key={t} value={t}>
+              {t} 级
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Input
+        className="h-8 w-40"
+        placeholder="业务类型，如 盗U盘"
+        value={bizType}
+        onChange={(e) => setBizType(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") apply();
+        }}
+      />
+      <Select value={engagement} onValueChange={setEngagement}>
+        <SelectTrigger size="sm" className="w-28">
+          <SelectValue placeholder="作业状态" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">全部状态</SelectItem>
+          {KV_ENGAGEMENTS.map((v) => (
+            <SelectItem key={v.value} value={v.value}>
+              {v.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Button variant="outline" size="sm" onClick={apply}>
+        筛选
+      </Button>
+      <Button variant="ghost" size="sm" onClick={clear}>
+        清空
+      </Button>
+    </div>
+  );
+}
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   { key: "company", label: "企业", icon: BuildingIcon },
@@ -660,8 +783,9 @@ function AssetsContent() {
         {/* 服务 */}
         <TabsContent value="service" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
           {searchBox}
+          <KVQuickFilter onApply={setQuery} />
           <AssetCard
-            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
+            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "价值", "业务", "作业状态", ""]}
             loaded={loaded}
             total={total}
             page={page}
@@ -675,6 +799,7 @@ function AssetsContent() {
             {slice(tabData("service")).map((a) => {
               const isHttp = a.service_type === "http";
               const svc = a.service_name || (isHttp ? "http" : "") || a.service_type || "";
+              const kv = ktVulnOf(a);
               let domainCell: React.ReactNode = "—";
               if (isHttp && a.url) {
                 domainCell = (
@@ -734,6 +859,22 @@ function AssetsContent() {
                           </span>
                         );
                       })
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {kv ? <KVValueBadge tier={kv.tier} score={kv.score} /> : <span className="text-muted-foreground text-xs">—</span>}
+                  </TableCell>
+                  <TableCell className="max-w-[8rem] truncate text-xs" title={kv?.biz_type}>
+                    {kv?.biz_type ?? "—"}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-xs">
+                    {kv && (kv.engagement_status || kv.verdict) ? (
+                      <span>
+                        {kv.engagement_status ?? "—"}
+                        {kv.verdict ? <span className="text-[10px] text-muted-foreground"> / {kv.verdict}</span> : null}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   <TableCell className="w-8 pl-0">

@@ -44,6 +44,7 @@ type KVStatus = {
 type SyncResultData = {
   synced?: Record<string, number> | null;
   companies?: string[] | null;
+  scope_added?: number | null; // kt-vuln：公司资产范围新增条数
   warnings?: string[] | null;
   errors?: string[] | null;
   fetched?: number; // kt-vuln：本次实际拉取条数
@@ -648,6 +649,7 @@ function KTVulnWorkbench() {
   const [loading, setLoading] = React.useState(false);
   const [importDomains, setImportDomains] = React.useState(true);
   const [maxAssets, setMaxAssets] = React.useState(KV_DEFAULT_MAX);
+  const [createCompany, setCreateCompany] = React.useState(true);
   const [syncing, setSyncing] = React.useState(false);
   const [result, setResult] = React.useState<SyncResultData | null>(null);
 
@@ -688,6 +690,7 @@ function KTVulnWorkbench() {
         ...filters,
         import_domains: importDomains,
         max_assets: maxAssets > 0 ? maxAssets : undefined,
+        create_company: createCompany,
       });
       setResult(r);
       const totalSynced = Object.values(r.synced ?? {}).reduce((a, b) => a + b, 0);
@@ -787,6 +790,14 @@ function KTVulnWorkbench() {
               onChange={(e) => setMaxAssets(Number.parseInt(e.target.value, 10) || 0)}
             />
             条
+          </label>
+          <label htmlFor="kv-create-company" className="flex items-center gap-1.5 text-sm">
+            <Checkbox
+              id="kv-create-company"
+              checked={createCompany}
+              onCheckedChange={(c) => setCreateCompany(!!c)}
+            />
+            按业务类型聚合公司（写入资产范围）
           </label>
           <span className="text-muted-foreground text-xs">服务资产（HTTP / 端口）始终入库。</span>
         </div>
@@ -961,7 +972,17 @@ function SyncResult({ result }: { result: SyncResultData }) {
         </p>
       )}
       {result.companies && result.companies.length > 0 && (
-        <p className="text-muted-foreground">新建/更新企业：{result.companies.join("、")}</p>
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-muted-foreground">聚合企业：</span>
+          {result.companies.map((c) => (
+            <Badge key={c} variant="secondary" className="text-[11px]">
+              {c}
+            </Badge>
+          ))}
+        </div>
+      )}
+      {result.scope_added != null && result.scope_added > 0 && (
+        <p className="text-muted-foreground">新增资产范围 {result.scope_added} 条</p>
       )}
       {result.warnings && result.warnings.length > 0 && (
         <ul className="list-inside list-disc text-amber-600 dark:text-amber-500">
