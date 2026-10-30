@@ -176,7 +176,9 @@ export default function LoginPage() {
           setIdentityPhase("exchanging");
           try {
             const { token } = await api.identityExchange(res.session.token);
-            if (cancelled) return;
+            // setPhase("exchanging") 已触发本 effect cleanup（cancelled=true），
+            // 但写 token 与跳转不是 setState，必须无条件执行——guard 会把成功结果丢弃，
+            // 页面将永远停在“正在登录…”。
             auth.setToken(token);
             window.location.replace("/function/tasks");
           } catch (err) {
