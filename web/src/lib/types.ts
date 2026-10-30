@@ -1527,7 +1527,8 @@ export interface KTVulnStats {
 // kt-vuln 同步随服务资产写入 assets.extra->'ktvuln' 的协同维度子树。
 export interface KTVulnExtra {
   score?: number; // 价值分 0-100
-  tier?: string; // A/B/C/D/E
+  tier?: string; // A/B/C/D/E（同步时已按 manual_tier 合并，展示即最终值）
+  country?: string; // 归属国家两字母码（如 US）
   biz_type?: string; // 业务类型标签
   engagement_status?: string; // 作业状态
   verdict?: string; // 判定

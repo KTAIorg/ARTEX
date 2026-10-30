@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { APP_CONFIG } from "@/config/app-config";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { auth } from "@/lib/auth";
 import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
 import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 
@@ -36,6 +37,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const variant = isSynced ? sidebarVariant : props.variant;
   const collapsible = isSynced ? sidebarCollapsible : props.collapsible;
 
+  // 角色过滤：无 roles 字段 = 全员可见；组与 item 各自命中任一角色即保留。
+  // 仅控制导航显隐，权限由后端 JWT + 403 兜底。
+  const roles = auth.getRoles();
+  const visible = (allowed?: string[]) => !allowed || allowed.some((r) => roles.includes(r));
+  const navItems = sidebarItems
+    .filter((group) => visible(group.roles))
+    .map((group) => ({ ...group, items: group.items.filter((item) => visible(item.roles)) }))
+    .filter((group) => group.items.length > 0);
+
   return (
     <Sidebar {...props} variant={variant} collapsible={collapsible}>
       <SidebarHeader>
@@ -52,7 +62,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={sidebarItems} />
+        <NavMain items={navItems} />
         {/* <NavDocuments items={data.documents} /> */}
         {/* <NavSecondary items={data.navSecondary} className="mt-auto" /> */}
       </SidebarContent>

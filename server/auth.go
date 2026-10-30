@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"log"
@@ -83,24 +84,45 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	return buf, nil
 }
 
-// signJWT issues a 7-day HS256 token for user ARTEX.
-func signJWT(key []byte) (string, error) {
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Subject:   "ARTEX",
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
-		IssuedAt:  jwt.NewNumericDate(time.Now()),
+// signJWT issues a 7-day HS256 token for user ARTEX; roles 写入 claims 供管理面
+// 鉴权。未传 roles 时按内网单管理员语义签发 ["admin"]，保持存量调用兼容；
+// 生产路径（账密登录/首次设密/identity 换发）都显式传角色。
+func signJWT(key []byte, roles ...string) (string, error) {
+	if len(roles) == 0 {
+		roles = []string{"admin"}
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":   "ARTEX",
+		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(jwtTTL).Unix(),
+		"roles": roles,
 	}).SignedString(key)
 }
 
-// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
-func verifyJWT(tokenStr string, key []byte) bool {
+// verifyJWT returns true when tokenStr is a valid, non-expired HS256 token,
+// 并回传 claims 里的本地角色（缺失/类型异常视为空，不影响token 本身有效性）。
+func verifyJWT(tokenStr string, key []byte) (bool, []string) {
 	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
 		return key, nil
 	})
-	return err == nil && t.Valid
+	if err != nil || !t.Valid {
+		return false, nil
+	}
+	claims, ok := t.Claims.(jwt.MapClaims)
+	if !ok {
+		return true, nil
+	}
+	raw, _ := claims["roles"].([]any)
+	roles := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			roles = append(roles, s)
+		}
+	}
+	return true, roles
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
@@ -115,8 +137,13 @@ func extractToken(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
+// rolesCtxKey 是 request context 里本地角色的键类型；私有结构体类型避免与其他
+// 包的字符串键冲突。
+type rolesCtxKey struct{}
+
 // requireAuth wraps h with JWT validation.
 // /api/auth/*, /api/health and the Basic Auth gate check are exempt.
+// 校验通过后把 claims 里的角色塞进 request context，供内层 requireRole 消费。
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
@@ -129,12 +156,36 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
+		ok, roles := verifyJWT(tok, s.jwtKey)
+		if !ok {
 			writeErr(w, 401, "token 无效或已过期")
 			return
 		}
-		h.ServeHTTP(w, r)
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rolesCtxKey{}, roles)))
 	})
+}
+
+// rolesFromContext 读 requireAuth 注入的本地角色；未注入返回 nil。
+func rolesFromContext(ctx context.Context) []string {
+	roles, _ := ctx.Value(rolesCtxKey{}).([]string)
+	return roles
+}
+
+// requireRole 返回要求持有指定本地角色的 middleware 包装器，角色不足一律 403。
+// 只能挂在 requireAuth 内层（依赖其注入的 roles context）；适配 http.HandlerFunc
+// 以便在 mux.HandleFunc 注册处直接包一层。
+func (s *Server) requireRole(role string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			for _, has := range rolesFromContext(r.Context()) {
+				if has == role {
+					h(w, r)
+					return
+				}
+			}
+			writeErr(w, 403, "需要管理员权限")
+		}
+	}
 }
 
 // GET /api/auth/status — reports whether the admin password has been initialised.
@@ -197,7 +248,8 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	// 首次设密即建立内网单管理员会话
+	tok, err := signJWT(s.jwtKey, "admin")
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -213,7 +265,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	if !verifyJWT(extractToken(r), s.jwtKey) {
+	if ok, _ := verifyJWT(extractToken(r), s.jwtKey); !ok {
 		writeErr(w, 401, "未授权")
 		return
 	}
@@ -289,7 +341,8 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	// 账密登录是内网单管理员入口，固定签发 admin 角色
+	tok, err := signJWT(s.jwtKey, "admin")
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return

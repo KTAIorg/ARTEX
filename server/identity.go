@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -104,6 +106,62 @@ func identityGet(ctx context.Context, rawURL, token string, out any) (int, error
 	return resp.StatusCode, nil
 }
 
+// ARTEX 本地角色映射：一次 authz/batch 探测 artex workspace 的三个资源动作，
+// 按序对应 admin/operator/viewer。与 vuln 权限（kt_vuln:* 资源）完全隔离。
+var identityBatchChecks = []struct{ resource, action string }{
+	{"artex:settings", "admin"},
+	{"artex:assets", "write"},
+	{"artex:assets", "read"},
+}
+
+// identityResolveRoles 调 POST /identity/v1/authz/batch（workspace=artex，Bearer 同
+// introspect 用的 opaque token），把 identity 授权映射成 ARTEX 本地角色：
+// allow[0]→admin、allow[1]→operator、allow[2]→viewer，取首个命中的档位。
+// 全 false 返回空切片（调用方按无权限拒绝）；网络失败、非 2xx、响应体解析失败
+// 都以 err 返回（调用方按 502 fail-closed）。结果条数不足时缺位视为 false。
+func identityResolveRoles(ctx context.Context, baseURL, token string) ([]string, error) {
+	checks := make([]map[string]string, 0, len(identityBatchChecks))
+	for _, c := range identityBatchChecks {
+		checks = append(checks, map[string]string{"resource": c.resource, "action": c.action})
+	}
+	payload, err := json.Marshal(map[string]any{"workspace": "artex", "checks": checks})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/identity/v1/authz/batch", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := identityHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("authz/batch status=%d", resp.StatusCode)
+	}
+	var out struct {
+		Results []struct {
+			Allow bool `json:"allow"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, identityMaxUpstreamBody)).Decode(&out); err != nil {
+		return nil, err
+	}
+	allowed := func(i int) bool { return i < len(out.Results) && out.Results[i].Allow }
+	switch {
+	case allowed(0):
+		return []string{"admin"}, nil
+	case allowed(1):
+		return []string{"operator"}, nil
+	case allowed(2):
+		return []string{"viewer"}, nil
+	}
+	return nil, nil
+}
+
 // POST /api/auth/identity/exchange — body {"token":"<identity opaque token>"}。
 // 校验通过则签发 ARTEX 自己的 7 天 JWT（subject 固定 "ARTEX"，与账密登录同一把
 // jwtKey），前端走既有登录后流程。
@@ -174,15 +232,30 @@ func (s *Server) identityExchange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tok, err := signJWT(s.jwtKey)
+	// ARTEX 本地角色映射：identity artex workspace 授权 → admin/operator/viewer。
+	// batch 失败（网络/非 2xx/解析失败）fail-closed 502；全 false 视为无 ARTEX 访问权。
+	roles, err := identityResolveRoles(r.Context(), base, token)
+	if err != nil {
+		log.Printf("[identity] exchange 拒绝: accountId=%q authz/batch 失败: %v", intro.AccountID, err)
+		writeErr(w, http.StatusBadGateway, "identity 服务不可达")
+		return
+	}
+	if len(roles) == 0 {
+		log.Printf("[identity] exchange 拒绝: accountId=%q 无 ARTEX 访问权限", intro.AccountID)
+		writeErr(w, http.StatusUnauthorized, "无 ARTEX 访问权限")
+		return
+	}
+
+	tok, err := signJWT(s.jwtKey, roles...)
 	if err != nil {
 		log.Printf("[identity] exchange 拒绝: accountId=%q 签发失败", intro.AccountID)
 		writeErr(w, http.StatusInternalServerError, "token 生成失败")
 		return
 	}
-	log.Printf("[identity] exchange 放行: accountId=%q", intro.AccountID)
+	log.Printf("[identity] exchange 放行: accountId=%q roles=%v", intro.AccountID, roles)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": tok,
+		"roles": roles,
 		"account": map[string]string{
 			"id":          intro.AccountID,
 			"accountNo":   intro.AccountNo,

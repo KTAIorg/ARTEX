@@ -101,7 +101,9 @@ export default function LoginPage() {
     setError("");
     try {
       const { token } = await api.login("ARTEX", password);
+      // 账密登录 = 内网单管理员，与后端给该路径签发的 JWT roles 对齐。
       auth.setToken(token);
+      auth.setRoles(["admin"]);
       window.location.replace("/function/tasks");
     } catch {
       setError("用户名或密码错误");
@@ -175,11 +177,12 @@ export default function LoginPage() {
           if (cancelled || res.status !== "confirmed" || !res.session?.token) return;
           setIdentityPhase("exchanging");
           try {
-            const { token } = await api.identityExchange(res.session.token);
+            const { token, roles } = await api.identityExchange(res.session.token);
             // setPhase("exchanging") 已触发本 effect cleanup（cancelled=true），
-            // 但写 token 与跳转不是 setState，必须无条件执行——guard 会把成功结果丢弃，
-            // 页面将永远停在“正在登录…”。
+            // 但写 token/roles 与跳转不是 setState，必须无条件执行——guard 会把成功
+            // 结果丢弃，页面将永远停在“正在登录…”。
             auth.setToken(token);
+            auth.setRoles(roles);
             window.location.replace("/function/tasks");
           } catch (err) {
             if (cancelled) return;

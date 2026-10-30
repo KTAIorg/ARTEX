@@ -233,7 +233,7 @@ func TestBasicAuthGate(t *testing.T) {
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != "/" {
 		t.Fatalf("unsafe cookie: %+v", cookie)
 	}
-	if verifyJWT(cookie.Value, s.jwtKey) {
+	if ok, _ := verifyJWT(cookie.Value, s.jwtKey); ok {
 		t.Fatal("gate cookie accepted as admin JWT")
 	}
 	adminJWT, _ := signJWT(s.jwtKey)
@@ -485,8 +485,11 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	var login struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &login); err != nil || w.Code != 200 || !verifyJWT(login.Token, s.jwtKey) {
+	if err := json.Unmarshal(w.Body.Bytes(), &login); err != nil || w.Code != 200 {
 		t.Fatalf("Basic Auth + existing login failed: %d %s", w.Code, w.Body.String())
+	}
+	if jwtOK, _ := verifyJWT(login.Token, s.jwtKey); !jwtOK {
+		t.Fatalf("login token 无效: %s", w.Body.String())
 	}
 	cookie := w.Result().Cookies()[0]
 	r = httptest.NewRequest("PUT", "/api/settings/basic-auth", strings.NewReader(`{"enabled":false}`))

@@ -1,4 +1,5 @@
 const TOKEN_KEY = "artex_token";
+const ROLES_KEY = "artex_roles";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
 
 export interface CurrentUser {
@@ -25,7 +26,28 @@ export const auth = {
 
   clearToken(): void {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ROLES_KEY);
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
+  },
+
+  // 登录角色（admin/operator/viewer），随 token 一起落 localStorage。
+  // 缺失/损坏一律回 viewer：前端显隐只是 UX，真正权限由后端 JWT + 403 兜底。
+  getRoles(): string[] {
+    if (typeof window === "undefined") return ["viewer"];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(ROLES_KEY) ?? "null");
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((r) => typeof r === "string")) {
+        return parsed;
+      }
+    } catch {
+      // 落默认 viewer
+    }
+    return ["viewer"];
+  },
+
+  setRoles(roles: string[]): void {
+    if (roles.length > 0) localStorage.setItem(ROLES_KEY, JSON.stringify(roles));
+    else localStorage.removeItem(ROLES_KEY);
   },
 
   // 从 JWT payload 的 sub 字段解析当前用户，仅用于展示，不做签名验证。

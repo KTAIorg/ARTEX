@@ -301,8 +301,10 @@ export const api = {
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
-  // KT Identity 换发：拿 identity opaque token 换 ARTEX 自己的 JWT（与账密登录产物同构）。
-  identityExchange: (token: string) => post<{ token: string }>("/auth/identity/exchange", { token }),
+  // KT Identity 换发：拿 identity opaque token 换 ARTEX 自己的 JWT（与账密登录产物同构），
+  // roles 为 identity 角色映射结果（admin/operator/viewer），前端仅用于导航显隐。
+  identityExchange: (token: string) =>
+    post<{ token: string; roles: string[] }>("/auth/identity/exchange", { token }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),

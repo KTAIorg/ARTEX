@@ -44,6 +44,8 @@ interface NavItemBase {
   badge?: NavBadge;
   disabled?: boolean;
   newTab?: boolean;
+  // 可见角色（admin/operator/viewer）；缺省 = 全员可见。命中任一角色即显示。
+  roles?: string[];
 }
 
 export interface NavMainLinkItem extends NavItemBase {
@@ -61,6 +63,8 @@ export interface NavGroup {
   id: number;
   label?: string;
   items: NavMainItem[];
+  // 组级可见角色：不命中则整组隐藏；组内 item 可再用 roles 单独收窄。
+  roles?: string[];
 }
 
 export const sidebarItems: NavGroup[] = [
@@ -85,6 +89,8 @@ export const sidebarItems: NavGroup[] = [
   {
     id: 2,
     label: "系统",
+    // 管理面整组仅 admin 可见；对应后端 requireRole("admin")，隐藏不替代 403。
+    roles: ["admin"],
     items: [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },

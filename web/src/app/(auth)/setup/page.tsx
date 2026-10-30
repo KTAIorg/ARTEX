@@ -48,7 +48,9 @@ export default function SetupPage() {
     setError("");
     try {
       const { token } = await api.initPassword(password);
+      // 首次初始化即为管理员（后端该路径签发 roles=["admin"] 的 JWT）。
       auth.setToken(token);
+      auth.setRoles(["admin"]);
       router.replace("/function/tasks");
     } catch (err) {
       setError(err instanceof Error ? err.message : "初始化失败");

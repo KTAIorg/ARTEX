@@ -44,9 +44,10 @@ import (
 //     级联生成 root_domain/subdomain/ip 资产，ip 资产由 store 内部落库，不单独计数）
 //   - 无 scheme → UpsertOtherService（ip:port，组件名作 service_name）
 //   - 其余 hostname → UpsertSubdomain
-//   - 协同维度（score/tier/biz_type/engagement_status/verdict/engagement_owner）
-//     写入服务资产 extra.ktvuln 子树（subdomain/ip 资产不带）；同步默认按业务
-//     类型聚合成公司「ktvuln:<业务类型>」并落 scope（IP+非 IP hostname）
+//   - 协同维度（score/tier(写入时按 manual_tier 合并)/biz_type/engagement_status/
+//     verdict/engagement_owner/country/rating_note）写入服务资产 extra.ktvuln
+//     子树（subdomain/ip 资产不带）；同步默认按业务类型聚合成公司
+//     「ktvuln:<业务类型>」并落 scope（IP+非 IP hostname）
 
 const (
 	kvSettingURL     = "sync.ktvuln.url"
@@ -56,6 +57,7 @@ const (
 	kvPageLimit      = 1000 // kt-vuln /api/assets 的 limit 服务端上限
 	kvDefaultMax     = 5000 // 单次同步入库保护上限
 	kvMaxErrs        = 100  // 响应里最多带回的错误条数，其余只计数
+	kvRatingNoteMax  = 500  // rating_note 落库时按字符截断的上限
 
 	// 服务账号鉴权（部署侧 KTSecret → k8s Secret 注入，优先于静态 token）。
 	kvEnvUser          = "KTVULN_SVC_USERNAME"
@@ -475,13 +477,18 @@ type kvAsset struct {
 	Component  *string  `json:"component"`
 	Version    *string  `json:"version"`
 	// 协同维度（二期）：整体写入服务资产的 extra.ktvuln 子树，供 DSL 筛选与
-	// 前端展示；biz_type/engagement_owner 是可空字段，nil 表示上游未标注。
-	Score            int     `json:"score"`             // 价值分 0-100
-	Tier             string  `json:"tier"`              // 价值分层 A-E
-	BizType          *string `json:"biz_type"`          // 业务类型（盗U盘/VPN平台/…，可空）
-	EngagementStatus string  `json:"engagement_status"` // 作业状态 todo/…
-	Verdict          string  `json:"verdict"`           // 判定 vulnerable/patched/…
-	EngagementOwner  *string `json:"engagement_owner"`  // 作业负责人（可空）
+	// 前端展示；biz_type/engagement_owner 是可空字段，nil 表示上游未标注；
+	// country/manual_tier/rating_note 上游可空（null/缺失解为零值）。
+	Score            int        `json:"score"`             // 价值分 0-100
+	Tier             string     `json:"tier"`              // 价值分层 A-E（自动评估）
+	ManualTier       string     `json:"manual_tier"`       // 人工覆核分层（可空，非空时展示优先于 tier）
+	BizType          *string    `json:"biz_type"`          // 业务类型（盗U盘/VPN平台/…，可空）
+	EngagementStatus string     `json:"engagement_status"` // 作业状态 todo/…
+	Verdict          string     `json:"verdict"`           // 判定 vulnerable/patched/…
+	EngagementOwner  *string    `json:"engagement_owner"`  // 作业负责人（可空）
+	Country          string     `json:"country"`           // 归属国家两字母码（可空）
+	RatingNote       string     `json:"rating_note"`       // 价值评分备注（可空，落库截断 500 字符）
+	LastSeen         *time.Time `json:"last_seen"`         // 上游最近确认时间（可空，RFC3339）
 }
 
 func (s *Server) syncKVRun(w http.ResponseWriter, r *http.Request) {
@@ -703,14 +710,20 @@ func kvIngest(as *db.AssetStore, it kvAsset, importDomains bool, synced map[stri
 
 // kvExtraPatch 把协同维度字段组装成写入 assets.extra 的补丁：整体替换
 // extra.ktvuln 子树（db 层顶层 || 合并，不动其他来源的 key）。空字符串/零值
-// 字段省略，synced_at 记本次同步时间（RFC3339）。
+// 字段省略，synced_at 记本次同步时间（RFC3339）。tier 在写入时合并展示值：
+// manual_tier（人工覆核）非空优先于自动 tier，manual_tier 原样另存。
 func kvExtraPatch(it kvAsset, syncedAt time.Time) map[string]any {
 	sub := map[string]any{}
 	if it.Score != 0 {
 		sub["score"] = it.Score
 	}
-	if it.Tier != "" {
-		sub["tier"] = it.Tier
+	tier := it.Tier
+	if manual := strings.TrimSpace(it.ManualTier); manual != "" {
+		tier = manual
+		sub["manual_tier"] = manual
+	}
+	if tier != "" {
+		sub["tier"] = tier
 	}
 	if v := strings.TrimSpace(kvStr(it.BizType)); v != "" {
 		sub["biz_type"] = v
@@ -723,6 +736,12 @@ func kvExtraPatch(it kvAsset, syncedAt time.Time) map[string]any {
 	}
 	if v := strings.TrimSpace(kvStr(it.EngagementOwner)); v != "" {
 		sub["engagement_owner"] = v
+	}
+	if v := strings.TrimSpace(it.Country); v != "" {
+		sub["country"] = v
+	}
+	if v := kvTruncRunes(strings.TrimSpace(it.RatingNote), kvRatingNoteMax); v != "" {
+		sub["rating_note"] = v
 	}
 	sub["synced_at"] = syncedAt.Format(time.RFC3339)
 	return map[string]any{"ktvuln": sub}
@@ -808,4 +827,12 @@ func kvStr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// kvTruncRunes 按字符数截断（rating_note 备注可能含中文，避免按字节切断 UTF-8）。
+func kvTruncRunes(s string, max int) string {
+	if max <= 0 || len([]rune(s)) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
 }

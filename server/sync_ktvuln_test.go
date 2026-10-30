@@ -400,18 +400,20 @@ func TestKVTokenLoginFailure(t *testing.T) {
 }
 
 // TestKVAssetDimensionFields 用 httptest 假 kt-vuln 验证资产行的协同维度字段
-// （score/tier/biz_type/engagement_status/verdict/engagement_owner）能正确解码，
-// 含 biz_type/engagement_owner 为 null 的行。
+// （score/tier/manual_tier/biz_type/engagement_status/verdict/engagement_owner/
+// country/rating_note/last_seen）能正确解码，含可空字段为 null 的行。
 func TestKVAssetDimensionFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"items": [
   {"ip": "1.2.3.4", "port": 443, "scheme": "https", "title": "Login",
    "hostnames": ["a.example.com"], "component": "Nginx", "version": "1.25",
-   "score": 92, "tier": "A", "biz_type": "盗U盘",
-   "engagement_status": "todo", "verdict": "vulnerable", "engagement_owner": "张三"},
+   "score": 92, "tier": "A", "manual_tier": "B", "biz_type": "盗U盘",
+   "engagement_status": "todo", "verdict": "vulnerable", "engagement_owner": "张三",
+   "country": "US", "rating_note": "核心盗U盘主机", "last_seen": "2026-10-30T08:09:10Z"},
   {"ip": "5.6.7.8", "port": 22, "hostnames": [], "score": 0, "tier": "",
-   "biz_type": null, "engagement_status": "", "verdict": "patched", "engagement_owner": null}
+   "biz_type": null, "engagement_status": "", "verdict": "patched", "engagement_owner": null,
+   "country": null, "manual_tier": "", "rating_note": null, "last_seen": null}
 ], "total": 2}`))
 	}))
 	defer srv.Close()
@@ -431,6 +433,9 @@ func TestKVAssetDimensionFields(t *testing.T) {
 	if full.Score != 92 || full.Tier != "A" {
 		t.Fatalf("score/tier: want 92/A, got %d/%q", full.Score, full.Tier)
 	}
+	if full.ManualTier != "B" {
+		t.Fatalf("manual_tier: want B, got %q", full.ManualTier)
+	}
 	if got := kvStr(full.BizType); got != "盗U盘" {
 		t.Fatalf("biz_type: want 盗U盘, got %q", got)
 	}
@@ -440,6 +445,15 @@ func TestKVAssetDimensionFields(t *testing.T) {
 	if got := kvStr(full.EngagementOwner); got != "张三" {
 		t.Fatalf("engagement_owner: want 张三, got %q", got)
 	}
+	if full.Country != "US" {
+		t.Fatalf("country: want US, got %q", full.Country)
+	}
+	if full.RatingNote != "核心盗U盘主机" {
+		t.Fatalf("rating_note: want 核心盗U盘主机, got %q", full.RatingNote)
+	}
+	if full.LastSeen == nil || !full.LastSeen.Equal(time.Date(2026, 10, 30, 8, 9, 10, 0, time.UTC)) {
+		t.Fatalf("last_seen: want 2026-10-30T08:09:10Z, got %v", full.LastSeen)
+	}
 	bare := page.Items[1]
 	if bare.BizType != nil || bare.EngagementOwner != nil {
 		t.Fatalf("null 可空字段应解成 nil 指针: biz_type=%v owner=%v", bare.BizType, bare.EngagementOwner)
@@ -447,15 +461,21 @@ func TestKVAssetDimensionFields(t *testing.T) {
 	if bare.Verdict != "patched" {
 		t.Fatalf("verdict: want patched, got %q", bare.Verdict)
 	}
+	if bare.Country != "" || bare.ManualTier != "" || bare.RatingNote != "" || bare.LastSeen != nil {
+		t.Fatalf("null/空 新字段应解为零值: country=%q manual_tier=%q rating_note=%q last_seen=%v",
+			bare.Country, bare.ManualTier, bare.RatingNote, bare.LastSeen)
+	}
 }
 
-// TestKVExtraPatch 覆盖维度→extra 补丁：字段齐全、全空零值、指针指向空串。
+// TestKVExtraPatch 覆盖维度→extra 补丁：字段齐全、全空零值、指针指向空串、
+// manual_tier 合并 tier、rating_note 超长截断。
 func TestKVExtraPatch(t *testing.T) {
 	syncedAt := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 
 	full := kvAsset{
 		Score: 92, Tier: "A", BizType: strPtr("盗U盘"),
 		EngagementStatus: "todo", Verdict: "vulnerable", EngagementOwner: strPtr("张三"),
+		Country: "US", RatingNote: "核心盗U盘主机",
 	}
 	patch := kvExtraPatch(full, syncedAt)
 	sub, ok := patch["ktvuln"].(map[string]any)
@@ -465,7 +485,8 @@ func TestKVExtraPatch(t *testing.T) {
 	want := map[string]any{
 		"score": 92, "tier": "A", "biz_type": "盗U盘",
 		"engagement_status": "todo", "verdict": "vulnerable",
-		"engagement_owner": "张三", "synced_at": syncedAt.Format(time.RFC3339),
+		"engagement_owner": "张三", "country": "US", "rating_note": "核心盗U盘主机",
+		"synced_at": syncedAt.Format(time.RFC3339),
 	}
 	if len(sub) != len(want) {
 		t.Fatalf("字段齐全: want %d 个 key, got %d (%v)", len(want), len(sub), sub)
@@ -486,13 +507,44 @@ func TestKVExtraPatch(t *testing.T) {
 	}
 
 	// 指针非 nil 但指向空串：与 nil 同样按「未标注」省略。
-	blank := kvExtraPatch(kvAsset{BizType: strPtr(""), EngagementOwner: strPtr(" ")}, syncedAt)
+	blank := kvExtraPatch(kvAsset{
+		BizType: strPtr(""), EngagementOwner: strPtr(" "), Country: " ", RatingNote: " ",
+	}, syncedAt)
 	sub, _ = blank["ktvuln"].(map[string]any)
 	if _, exists := sub["biz_type"]; exists {
 		t.Fatalf("空串 biz_type 应省略: %v", sub)
 	}
 	if _, exists := sub["engagement_owner"]; exists {
 		t.Fatalf("空串 engagement_owner 应省略: %v", sub)
+	}
+	if _, exists := sub["country"]; exists {
+		t.Fatalf("空白 country 应省略: %v", sub)
+	}
+	if _, exists := sub["rating_note"]; exists {
+		t.Fatalf("空白 rating_note 应省略: %v", sub)
+	}
+
+	// manual_tier（人工覆核）非空时 tier 取 manual_tier，且 manual_tier 原样另存。
+	merged, _ := kvExtraPatch(kvAsset{Tier: "C", ManualTier: " A "}, syncedAt)["ktvuln"].(map[string]any)
+	if merged["tier"] != "A" || merged["manual_tier"] != "A" {
+		t.Fatalf("manual_tier 合并: want tier=A manual_tier=A, got tier=%v manual_tier=%v", merged["tier"], merged["manual_tier"])
+	}
+	// manual_tier 为空时 tier 保持上游自动值，不另存 manual_tier。
+	auto, _ := kvExtraPatch(kvAsset{Tier: "C"}, syncedAt)["ktvuln"].(map[string]any)
+	if auto["tier"] != "C" {
+		t.Fatalf("无 manual_tier 时 tier 应保持自动值 C: %v", auto)
+	}
+	if _, exists := auto["manual_tier"]; exists {
+		t.Fatalf("manual_tier 为空应省略: %v", auto)
+	}
+
+	// rating_note 超长按字符截断到 500（含中文，不按字节切）。
+	trunc, _ := kvExtraPatch(kvAsset{RatingNote: strings.Repeat("评", 600)}, syncedAt)["ktvuln"].(map[string]any)
+	if got, _ := trunc["rating_note"].(string); len([]rune(got)) != kvRatingNoteMax {
+		t.Fatalf("rating_note 截断: want %d 字符, got %d", kvRatingNoteMax, len([]rune(got)))
+	}
+	if got := kvTruncRunes(strings.Repeat("评", 400), kvRatingNoteMax); len([]rune(got)) != 400 {
+		t.Fatalf("kvTruncRunes 未超长应原样返回: got %d 字符", len([]rune(got)))
 	}
 }
 

@@ -114,19 +114,67 @@ const KV_ENGAGEMENTS: { value: string; label: string }[] = [
   { value: "excluded", label: "已排除" },
 ];
 
-// 价值列：tier 徽章 + 分数（如 A·92）。A/B 是高价值目标，用醒目色。
-const KV_TIER_TONE: Record<string, string> = {
-  A: "bg-rose-600 hover:bg-rose-600",
-  B: "bg-amber-500 hover:bg-amber-500",
+// 价值列：tier 徽章 + 分数（如 A·92）。A/B 是高价值目标用醒目填充色，
+// C/D/E 是低价值长尾，用 slate/zinc/stone 中性淡色阶区分。
+const KV_TIER_TONE: Record<string, { variant: "default" | "secondary"; cls: string }> = {
+  A: { variant: "default", cls: "bg-rose-600 hover:bg-rose-600" },
+  B: { variant: "default", cls: "bg-amber-500 hover:bg-amber-500" },
+  C: { variant: "secondary", cls: "bg-slate-200 text-slate-700" },
+  D: { variant: "secondary", cls: "bg-zinc-200 text-zinc-700" },
+  E: { variant: "secondary", cls: "bg-stone-200 text-stone-700" },
 };
 
 function KVValueBadge({ tier, score }: { tier?: string; score?: number }) {
   if (!tier) return <span className="font-mono text-xs tabular-nums">{score ?? "—"}</span>;
-  const tone = KV_TIER_TONE[tier] ?? "";
+  const tone = KV_TIER_TONE[tier];
   return (
-    <Badge variant={tone ? "default" : "outline"} className={cn("font-mono text-[10px]", tone)}>
+    <Badge variant={tone?.variant ?? "outline"} className={cn("font-mono text-[10px]", tone?.cls)}>
       {tier}
       {score != null ? `·${score}` : ""}
+    </Badge>
+  );
+}
+
+// 作业状态徽章配色：todo=灰、claimed=蓝、in_progress=琥珀、done*=绿；未列出状态走中性 outline。
+const KV_ENGAGEMENT_TONE: Record<string, string> = {
+  todo: "bg-slate-100 text-slate-600",
+  claimed: "bg-blue-100 text-blue-700",
+  in_progress: "bg-amber-100 text-amber-700",
+  done_hit: "bg-emerald-100 text-emerald-700",
+  done_miss: "bg-emerald-100 text-emerald-700",
+};
+
+// 判定（verdict）中文与配色：可确认=红、疑似漏洞=橙、已修复=绿、不适用=灰、未知=金。
+const KV_VERDICT_LABEL: Record<string, string> = {
+  executable: "可确认",
+  vulnerable: "疑似漏洞",
+  patched: "已修复",
+  not_applicable: "不适用",
+  unknown: "未知",
+};
+const KV_VERDICT_TONE: Record<string, string> = {
+  executable: "bg-red-600 hover:bg-red-600",
+  vulnerable: "bg-orange-100 text-orange-700",
+  patched: "bg-emerald-100 text-emerald-700",
+  not_applicable: "bg-slate-100 text-slate-600",
+  unknown: "bg-yellow-100 text-yellow-700",
+};
+
+function KVEngagementBadge({ status }: { status: string }) {
+  const tone = KV_ENGAGEMENT_TONE[status];
+  const label = KV_ENGAGEMENTS.find((v) => v.value === status)?.label ?? status;
+  return (
+    <Badge variant={tone ? "secondary" : "outline"} className={cn("text-[10px]", tone)}>
+      {label}
+    </Badge>
+  );
+}
+
+function KVVerdictBadge({ verdict }: { verdict: string }) {
+  const tone = KV_VERDICT_TONE[verdict];
+  return (
+    <Badge variant={tone ? "secondary" : "outline"} className={cn("text-[10px]", tone)}>
+      {KV_VERDICT_LABEL[verdict] ?? verdict}
     </Badge>
   );
 }
@@ -785,7 +833,7 @@ function AssetsContent() {
           {searchBox}
           <KVQuickFilter onApply={setQuery} />
           <AssetCard
-            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "价值", "业务", "作业状态", ""]}
+            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "价值", "业务", "国家", "作业状态", "判定", ""]}
             loaded={loaded}
             total={total}
             page={page}
@@ -864,17 +912,28 @@ function AssetsContent() {
                   <TableCell className="whitespace-nowrap">
                     {kv ? <KVValueBadge tier={kv.tier} score={kv.score} /> : <span className="text-muted-foreground text-xs">—</span>}
                   </TableCell>
-                  <TableCell className="max-w-[8rem] truncate text-xs" title={kv?.biz_type}>
-                    {kv?.biz_type ?? "—"}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-xs">
-                    {kv && (kv.engagement_status || kv.verdict) ? (
-                      <span>
-                        {kv.engagement_status ?? "—"}
-                        {kv.verdict ? <span className="text-[10px] text-muted-foreground"> / {kv.verdict}</span> : null}
-                      </span>
+                  <TableCell className="max-w-[8rem]" title={kv?.biz_type}>
+                    {kv?.biz_type ? (
+                      <Badge variant="secondary" className="max-w-full truncate text-[10px]">
+                        {kv.biz_type}
+                      </Badge>
                     ) : (
-                      <span className="text-muted-foreground">—</span>
+                      "—"
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{kv?.country ?? "—"}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {kv?.engagement_status ? (
+                      <KVEngagementBadge status={kv.engagement_status} />
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {kv?.verdict ? (
+                      <KVVerdictBadge verdict={kv.verdict} />
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
                     )}
                   </TableCell>
                   <TableCell className="w-8 pl-0">
