@@ -63,6 +63,9 @@ import type {
   InterceptRule,
   JudgeConfig,
   JudgeUsage,
+  KTVulnAsset,
+  KTVulnFilters,
+  KTVulnStats,
   LLMPoolStatus,
   LLMProfile,
   LLMRecordDetail,
@@ -1288,6 +1291,40 @@ export const api = {
       warnings: string[] | null;
       errors: string[] | null;
     }>("/sync/scopesentry/sync", body),
+
+  // ---- 资产同步 (kt-vuln 数据源，纯 REST) ----
+  kvStatus: () =>
+    get<{
+      configured: boolean;
+      enabled: boolean;
+      url: string;
+      token_hint: string;
+      reachable: boolean;
+      stats: KTVulnStats | null;
+      stats_error: string;
+    }>("/sync/ktvuln/status"),
+  kvDatasource: (body: { url?: string; token?: string; enabled?: boolean }) =>
+    post<{ url: string; enabled: boolean; token_hint: string }>("/sync/ktvuln/datasource", body),
+  kvAssets: (limit = 50, offset = 0, filters: KTVulnFilters = {}) => {
+    const p = new URLSearchParams({ limit: String(limit), offset: String(offset), sort: "score_desc" });
+    for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== "") p.set(k, String(v));
+    return get<{ items: KTVulnAsset[]; total: number }>(`/sync/ktvuln/assets?${p.toString()}`).then((r) => ({
+      items: arr(r.items),
+      total: r.total ?? 0,
+    }));
+  },
+  kvSync: (body: KTVulnFilters & {
+    import_domains?: boolean; // hostnames 落成 subdomain 资产，默认 true
+    max_assets?: number; // 单次同步上限，默认 5000
+  }) =>
+    post<{
+      synced: Record<string, number>; // http_service | other_service | subdomain
+      fetched: number;
+      remote_total: number;
+      truncated: boolean;
+      warnings: string[] | null;
+      errors: string[] | null;
+    }>("/sync/ktvuln/sync", body),
 
   // ---- skills (文件系统) ----
   skills: () => get<{ skills: SkillItem[] }>("/skills").then((r) => arr(r.skills)),

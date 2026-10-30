@@ -2570,6 +2570,44 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/sync/scopesentry/tasks") return { tasks: [] };
   if (path === "/sync/scopesentry/sync") return { synced: {}, companies: null, warnings: null, errors: null };
 
+  // ── kt-vuln（demo：已连接，静态样例资产）──
+  if (path === "/sync/ktvuln/status")
+    return {
+      configured: true,
+      enabled: true,
+      url: "https://vuln.ktyun.cc",
+      token_hint: "eyJhbG…k9Xz",
+      reachable: true,
+      stats: { assets_total: 48213, cves_total: 291407, assessments_total: 1038422, findings_total: 874 },
+      stats_error: "",
+    };
+  if (path === "/sync/ktvuln/assets") {
+    const rows = D.ktvulnAssets.filter((a) => {
+      const tier = q.get("tier");
+      const verdict = q.get("verdict");
+      const search = q.get("q")?.toLowerCase();
+      if (tier && a.tier !== tier) return false;
+      if (verdict && a.verdict !== verdict) return false;
+      if (search) {
+        const hay = `${a.ip} ${a.title ?? ""} ${(a.hostnames ?? []).join(" ")}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+    const limit = Number(q.get("limit") ?? 50);
+    const offset = Number(q.get("offset") ?? 0);
+    return { items: rows.slice(offset, offset + limit), total: rows.length };
+  }
+  if (path === "/sync/ktvuln/sync")
+    return {
+      synced: { http_service: 3, other_service: 1, subdomain: 5 },
+      fetched: 6,
+      remote_total: 6,
+      truncated: false,
+      warnings: null,
+      errors: null,
+    };
+
   // ── skills ──
   if (path === "/skills" && m === "GET") return { skills: D.skills };
   if (path === "/skills/missing") return { missing: D.missingSkills };

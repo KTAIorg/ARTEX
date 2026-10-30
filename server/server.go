@@ -984,6 +984,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sync/scopesentry/projects", s.syncSSProjects)
 	mux.HandleFunc("GET /api/sync/scopesentry/tasks", s.syncSSTasks)
 	mux.HandleFunc("POST /api/sync/scopesentry/sync", s.syncSSRun)
+	// 资产同步 — kt-vuln 数据源（纯 REST，配置存 settings KV）
+	mux.HandleFunc("GET /api/sync/ktvuln/status", s.syncKVStatus)
+	mux.HandleFunc("POST /api/sync/ktvuln/datasource", s.syncKVDatasource)
+	mux.HandleFunc("GET /api/sync/ktvuln/assets", s.syncKVAssets)
+	mux.HandleFunc("POST /api/sync/ktvuln/sync", s.syncKVRun)
 	// Skill CRUD (文件系统)
 	mux.HandleFunc("GET /api/skills", s.fsListSkills)
 	mux.HandleFunc("POST /api/skills", s.fsCreateSkill)
