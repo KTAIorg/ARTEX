@@ -996,6 +996,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sync/ktvuln/datasource", admin(s.syncKVDatasource))
 	mux.HandleFunc("GET /api/sync/ktvuln/assets", s.syncKVAssets)
 	mux.HandleFunc("POST /api/sync/ktvuln/sync", admin(s.syncKVRun))
+	// kt-vuln 用户令牌透传代理：/api/vuln/* → {VULN_PROXY_TARGET}/api/*（vulnproxy.go）。
+	// 挂在 /api/ 下天然过 requireAuth；用户 identity 令牌从 X-Identity-Token 取。
+	mux.HandleFunc("/api/vuln/", s.vulnProxy)
 	// Skill CRUD (文件系统)
 	mux.HandleFunc("GET /api/skills", s.fsListSkills)
 	mux.HandleFunc("POST /api/skills", admin(s.fsCreateSkill))

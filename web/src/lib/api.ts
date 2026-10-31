@@ -141,6 +141,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (r.status === 401) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
+      // 同步清 identity 令牌（auth.clearToken 的对应项，见 lib/auth.ts）。
+      localStorage.removeItem("artex.identity_token");
       document.cookie = "artex_token=; path=/; max-age=0";
       window.location.href = "/login";
     }
@@ -303,8 +305,7 @@ export const api = {
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
   // KT Identity 换发：拿 identity opaque token 换 ARTEX 自己的 JWT（与账密登录产物同构），
   // roles 为 identity 角色映射结果（admin/operator/viewer），前端仅用于导航显隐。
-  identityExchange: (token: string) =>
-    post<{ token: string; roles: string[] }>("/auth/identity/exchange", { token }),
+  identityExchange: (token: string) => post<{ token: string; roles: string[] }>("/auth/identity/exchange", { token }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),

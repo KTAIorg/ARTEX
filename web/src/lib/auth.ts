@@ -1,5 +1,9 @@
 const TOKEN_KEY = "artex_token";
 const ROLES_KEY = "artex_roles";
+// KT Identity opaque token：登录换发时原样留存（P1 起不再用完即丢），供
+// /api/vuln/* 用户令牌透传代理——vuln 权限按用户判定、审计归因真实用户。
+// 只存 localStorage，不写 cookie（不参与服务端路由守卫）。
+const IDENTITY_TOKEN_KEY = "artex.identity_token";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
 
 export interface CurrentUser {
@@ -27,7 +31,23 @@ export const auth = {
   clearToken(): void {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(ROLES_KEY);
+    // identity 令牌与 ARTEX 会话同生共死：登出/401 清理路径一并抹掉，
+    // 不给 /api/vuln 代理留下过期 opaque token。
+    localStorage.removeItem(IDENTITY_TOKEN_KEY);
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
+  },
+
+  getIdentityToken(): string | null {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem(IDENTITY_TOKEN_KEY);
+  },
+
+  setIdentityToken(token: string): void {
+    localStorage.setItem(IDENTITY_TOKEN_KEY, token);
+  },
+
+  clearIdentityToken(): void {
+    localStorage.removeItem(IDENTITY_TOKEN_KEY);
   },
 
   // 登录角色（admin/operator/viewer），随 token 一起落 localStorage。

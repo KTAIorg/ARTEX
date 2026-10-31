@@ -103,6 +103,9 @@ export default function LoginPage() {
     try {
       const { token } = await api.login("ARTEX", password);
       // 账密登录 = 内网单管理员，与后端给该路径签发的 JWT roles 对齐。
+      // 该路径没有 identity 令牌：清掉上一次 identity 登录可能残留的旧 token，
+      // 避免 /api/vuln 代理继续透传已换人的用户令牌（审计归因错人）。
+      auth.clearIdentityToken();
       auth.setToken(token);
       auth.setRoles(["admin"]);
       window.location.replace("/function/tasks");
@@ -181,9 +184,12 @@ export default function LoginPage() {
             const { token, roles } = await api.identityExchange(res.session.token);
             // setPhase("exchanging") 已触发本 effect cleanup（cancelled=true），
             // 但写 token/roles 与跳转不是 setState，必须无条件执行——guard 会把成功
-            // 结果丢弃，页面将永远停在“正在登录…”。
+            // 结果丢弃，页面将永远停在“正在登录…”。identity opaque token 同理：
+            // 不再用完即丢，P1 起留存（artex.identity_token），供 /api/vuln/* 用户
+            // 令牌透传代理，登出时随 clearToken 一并清除。
             auth.setToken(token);
             auth.setRoles(roles);
+            auth.setIdentityToken(res.session.token);
             window.location.replace("/function/tasks");
           } catch (err) {
             // 失败路径与上面的成功路径对称：此时 cancelled 必为 true，若被 guard
