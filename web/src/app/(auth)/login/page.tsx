@@ -25,6 +25,7 @@ type IdentityPhase = "starting" | "ready" | "exchanging" | "expired" | "error";
 const IDENTITY_START_RETRIES = 3; // telegramStart 失败自动重试次数上限
 const IDENTITY_RETRY_DELAY_MS = 800;
 const IDENTITY_POLL_INTERVAL_MS = 2500;
+const IDENTITY_EXCHANGE_TIMEOUT_MS = 45_000; // exchanging 看门狗：超时落错误态，避免无限转圈
 
 function formatCountdown(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -185,7 +186,9 @@ export default function LoginPage() {
             auth.setRoles(roles);
             window.location.replace("/function/tasks");
           } catch (err) {
-            if (cancelled) return;
+            // 失败路径与上面的成功路径对称：此时 cancelled 必为 true，若被 guard
+            // 吞掉，报错永远不落 UI，页面会无限停在「正在登录…」。cleanup 只结束
+            // effect 本身，组件仍在页上，setState 是安全的。
             setIdentityError(err instanceof Error && err.message ? `登录失败：${err.message}` : "登录失败，请重试");
             setIdentityPhase("error");
           }
@@ -207,6 +210,18 @@ export default function LoginPage() {
     if (identityPhase !== "ready") return;
     const timer = setInterval(() => setIdentitySecondsLeft((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(timer);
+  }, [identityPhase]);
+
+  // exchanging 看门狗：换发卡死（identity 冷连接 TTFB 可达 16s+，客户端超时又可能
+  // 被网络层吞掉）时兜底落错误态给重试按钮，避免页面无限停在「正在登录…」；
+  // phase 变化（报错/重开流程/跳转卸载）即清理定时器。
+  useEffect(() => {
+    if (identityPhase !== "exchanging") return;
+    const timer = setTimeout(() => {
+      setIdentityError("登录超时：身份服务响应缓慢，请重试");
+      setIdentityPhase("error");
+    }, IDENTITY_EXCHANGE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
   }, [identityPhase]);
 
   useEffect(() => {
