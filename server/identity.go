@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ const (
 	defaultIdentityLoginURL = "https://login.ktyun.cc"
 	identityMaxExchangeBody = 8 << 10 // exchange 请求体上限 8KB
 	identityMaxUpstreamBody = 1 << 20 // introspect/permissions 响应读取上限
+	identityRetryDelay      = 500 * time.Millisecond
 )
 
 // identityBaseURL 解析 IDENTITY_LOGIN_URL（默认 https://login.ktyun.cc，归一末尾斜杠）。
@@ -47,9 +49,14 @@ func identityRequireRole() string {
 }
 
 // identityTransport / identityReverseProxy 包级构造一次复用，避免每个请求重建连接池。
+// 办公室节点到 login.ktyun.cc 的公网冷连接实测 TTFB 可达 16s（SNAT/conntrack 病理，
+// 热连接仅 1-2s）：ResponseHeaderTimeout 放宽到 30s、空闲连接保热 10m 压制冷建连；
+// 强制 HTTP/1.1（禁用 h2 升级）消灭 "http2: timeout awaiting response headers" 这一类
+// 失败——login.ktyun.cc 走 CF，对 h1 完全友好。
 var identityTransport = &http.Transport{
-	ResponseHeaderTimeout: 10 * time.Second,
-	IdleConnTimeout:       60 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+	IdleConnTimeout:       10 * time.Minute,
+	TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 }
 
 var identityReverseProxy = &httputil.ReverseProxy{
@@ -74,8 +81,13 @@ func (s *Server) identityProxy(w http.ResponseWriter, r *http.Request) {
 	identityReverseProxy.ServeHTTP(w, r)
 }
 
-// identityHTTPClient 供换发端点调用 introspect / permissions，5s 超时 fail-closed。
-var identityHTTPClient = &http.Client{Timeout: 5 * time.Second}
+// identityHTTPClient 供换发端点调用 introspect / permissions：与反代共用
+// identityTransport 连接池；20s 整体超时，网络级瞬断由 identityGet 重试一次，
+// 最终失败仍按 502 fail-closed。
+var identityHTTPClient = &http.Client{
+	Timeout:   20 * time.Second,
+	Transport: identityTransport,
+}
 
 // identityIntrospection 是 introspect 响应的宽松解析：active/principalKind/accountId
 // 参与校验，accountNo/displayName 可选、仅透传给前端展示。
@@ -89,21 +101,34 @@ type identityIntrospection struct {
 
 // identityGet 发起带 Bearer 的 GET 并把 JSON 响应解析进 out。返回 HTTP 状态码；
 // 网络失败与响应体解析失败都以 err 返回（调用方统一按 502 fail-closed 处理）。
+// 网络级错误（Do 直接失败、未收到响应）原地重试一次——introspect/permissions
+// 均为幂等 GET，冷连接瞬断重试可救回大部分假故障；拿到响应后的失败不重试。
 func identityGet(ctx context.Context, rawURL, token string, out any) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := identityHTTPClient.Do(req)
-	if err != nil {
-		return 0, err
+	for attempt := 1; ; attempt++ {
+		resp, err := identityHTTPClient.Do(req)
+		if err != nil {
+			if attempt < 2 {
+				log.Printf("[identity] 第2次尝试: %v", err)
+				select {
+				case <-time.After(identityRetryDelay):
+					continue
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				}
+			}
+			return 0, err
+		}
+		defer resp.Body.Close()
+		if err := json.NewDecoder(io.LimitReader(resp.Body, identityMaxUpstreamBody)).Decode(out); err != nil {
+			return resp.StatusCode, err
+		}
+		return resp.StatusCode, nil
 	}
-	defer resp.Body.Close()
-	if err := json.NewDecoder(io.LimitReader(resp.Body, identityMaxUpstreamBody)).Decode(out); err != nil {
-		return resp.StatusCode, err
-	}
-	return resp.StatusCode, nil
 }
 
 // ARTEX 本地角色映射：一次 authz/batch 探测 artex workspace 的三个资源动作，
