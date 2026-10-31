@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import {
   DndContext,
@@ -303,6 +304,26 @@ function compareTasks(left: Task, right: Task, field: TaskSortField, direction: 
 }
 
 export default function TasksPage() {
+  // useSearchParams（预填跳转）需要 Suspense 边界，静态导出构建才不报错。
+  return (
+    <React.Suspense fallback={null}>
+      <TasksPageContent />
+    </React.Suspense>
+  );
+}
+
+function TasksPageContent() {
+  const searchParams = useSearchParams();
+  // 外部预填（资产页漏洞库/CVE「下发任务」跳转）：?new_task=1&name=&description=&goal=
+  const createPrefill = React.useMemo(() => {
+    if (searchParams.get("new_task") !== "1") return null;
+    const name = searchParams.get("name") ?? "";
+    const description = searchParams.get("description") ?? "";
+    const goal = searchParams.get("goal") ?? "";
+    if (!name && !description && !goal) return null;
+    return { name, description, goal };
+  }, [searchParams]);
+
   const [activeTab, setActiveTab] = React.useState("current");
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
@@ -919,6 +940,7 @@ export default function TasksPage() {
               <CreateTaskSheet
                 tasks={tasks}
                 categories={categories}
+                prefill={createPrefill}
                 onCreated={refreshCategoriesAndTasks}
                 onCategoriesChanged={refreshCategoriesAndTasks}
               />
@@ -3091,11 +3113,13 @@ function CategoryManagementSheet({
 function CreateTaskSheet({
   tasks,
   categories,
+  prefill,
   onCreated,
   onCategoriesChanged,
 }: {
   tasks: Task[];
   categories: TaskCategory[];
+  prefill?: { name: string; description: string; goal: string } | null;
   onCreated: () => void;
   onCategoriesChanged: () => void;
 }) {
@@ -3148,6 +3172,18 @@ function CreateTaskSheet({
       .then(setCompanies)
       .catch(() => setCompanies([]));
   }, []);
+
+  // 外部预填（漏洞库/CVE「下发任务」跳转进来）：一次性填入并自动打开抽屉。
+  // 只认一次：之后用户手改表单不受影响，也不会因父组件重渲染被覆盖。
+  const prefillAppliedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!prefill || prefillAppliedRef.current) return;
+    prefillAppliedRef.current = true;
+    if (prefill.name) setName(prefill.name);
+    if (prefill.description) setDescription(prefill.description);
+    if (prefill.goal) setGoal(prefill.goal);
+    setOpen(true);
+  }, [prefill]);
 
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
   // absolute paths to the description; the task's agents open them by path via Read/Bash.
