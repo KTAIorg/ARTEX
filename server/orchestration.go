@@ -515,9 +515,16 @@ func (s *Server) seedOrchestrationTools() {
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, bindings)
 	}
+	// vuln 情报工具例外：对话 agent(auto) 与任务 agent(worker) 都要能实时查
+	// kt-vuln（issue kt-vuln #58 需求 B），seed 默认绑两者。
+	vulnAgents, _ := json.Marshal([]string{"auto", "worker"})
 	for _, t := range s.platformTools() {
 		schema, _ := json.Marshal(t.InputSchema())
-		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
+		agents := autoAgents
+		if vulnToolKeys[t.Name()] {
+			agents = vulnAgents
+		}
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, agents)
 	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
