@@ -105,4 +105,13 @@ export const sidebarItems: NavGroup[] = [
       { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
     ],
   },
+  {
+    id: 3,
+    label: "Vuln情报站",
+    // kt-vuln（vuln.ktyun.cc）资产/CVE 情报唯一事实源；普通用户可见（权限由 identity 令牌在 vuln 侧判定）。
+    items: [
+      { id: "vuln-cves", title: "CVE列表", url: "/vuln/cves", icon: Bug },
+      { id: "vuln-assets", title: "情报", url: "/vuln/assets", icon: ShieldAlert },
+    ],
+  },
 ];

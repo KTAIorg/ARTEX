@@ -8,6 +8,7 @@
 // - 上游判定 identity 令牌过期/无效时代理会回 X-Identity-Expired: true：只清
 //   identity 令牌（不动 ARTEX 会话），提示用户重新通过 Telegram 登录换取新令牌。
 
+import { http } from "@/lib/api";
 import { auth } from "@/lib/auth";
 
 export interface VulnAsset {
@@ -71,6 +72,51 @@ export type VulnEngagementStatus =
   | "done_miss"
   | "blocked"
   | "excluded";
+
+// 任务下发的 kt-vuln 资产快照行（vuln-workset）。快照是下发那一刻的凭证：
+// 事实源始终在 vuln.ktyun.cc，之后 tier/verdict 变化不会回写到快照。
+export interface VulnWorksetItem {
+  vuln_asset_id: number;
+  url: string;
+  host: string;
+  port: number;
+  scheme: string;
+  title?: string;
+  tier?: string;
+  manual_tier?: string;
+  score?: number;
+  cve?: string;
+  verdict?: string;
+  biz_type?: string;
+}
+
+// 下发 → 任务创建之间的快照中转：sessionStorage 按页签隔离，任务创建成功
+// pin 到新任务后即清除；未清理的残留会在下一次下发时被覆盖。
+export const VULN_WS_DRAFT_KEY = "vuln_ws_draft";
+
+export function saveVulnWorksetDraft(items: VulnWorksetItem[]) {
+  sessionStorage.setItem(VULN_WS_DRAFT_KEY, JSON.stringify({ items }));
+}
+
+// 读回时做最小形状校验：坏数据（手改/旧版本残留）当作没有草稿处理。
+export function readVulnWorksetDraft(): VulnWorksetItem[] {
+  try {
+    const raw = sessionStorage.getItem(VULN_WS_DRAFT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    if (!Array.isArray(parsed.items)) return [];
+    return parsed.items.filter(
+      (item): item is VulnWorksetItem =>
+        !!item && typeof item === "object" && typeof (item as VulnWorksetItem).vuln_asset_id === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function clearVulnWorksetDraft() {
+  sessionStorage.removeItem(VULN_WS_DRAFT_KEY);
+}
 
 const MISSING_IDENTITY_MSG = "缺少 KT Identity 令牌，请退出后通过 Telegram 重新登录";
 
@@ -178,4 +224,19 @@ export const vuln = {
         note: note?.trim() ? note.trim() : undefined,
       }),
     }),
+
+  // ---- 任务 Vuln 工作集（ARTEX 自有 API /api/tasks/{id}/vuln-workset）----
+  // 注意：这两个不是 /api/vuln 代理（不带 X-Identity-Token 双头），走 lib/api
+  // 的 http()——与任务页其余调用同一套 ARTEX JWT 鉴权与错误处理。
+  // pin：任务创建成功后把下发时抓的资产快照挂到新任务上。
+  pinTaskWorkset: (taskId: string, items: VulnWorksetItem[]) =>
+    http<{ items: number }>(`/tasks/${encodeURIComponent(taskId)}/vuln-workset`, {
+      method: "POST",
+      body: JSON.stringify({ items }),
+    }),
+  // list：任务详情读取工作集快照（空/未部署端点返回空数组）。
+  taskWorkset: (taskId: string) =>
+    http<{ items: VulnWorksetItem[] | null }>(`/tasks/${encodeURIComponent(taskId)}/vuln-workset`).then(
+      (r) => r.items ?? [],
+    ),
 };
