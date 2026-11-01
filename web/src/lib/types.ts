@@ -1483,65 +1483,6 @@ export interface SSTask {
   endTime?: string;
 }
 
-// ── 资产同步 (kt-vuln 数据源) ─────────────────────────────────────────────────
-// kt-vuln（vuln.ktyun.cc）的资产是 ip:port 暴露面，字段来自 GET /api/assets。
-// 可空字段与后端 kvAsset 的指针字段对应（缺失 = null）。
-export interface KTVulnAsset {
-  id: number;
-  ip: string;
-  port: number;
-  scheme?: string | null;
-  title?: string | null;
-  hostnames?: string[] | null;
-  php_version?: string | null;
-  country?: string | null;
-  component?: string | null;
-  version?: string | null;
-  verdict?: string | null; // vulnerable | executable | patched | not_applicable | unknown
-  score?: number | null; // 价值分 0-100
-  tier?: string | null; // A/B/C/D/E
-  biz_type?: string | null; // 业务类型标签（盗U盘 / VPN平台 …）
-  engagement_status?: string | null; // 作业状态 todo | claimed | in_progress | …
-  engagement_owner?: string | null; // 协同负责人
-}
-
-// kt-vuln 资产筛选（透传 GET /api/assets 支持的查询参数子集）。
-export interface KTVulnFilters {
-  verdict?: string;
-  tier?: string;
-  min_score?: number;
-  component?: string;
-  biz_type?: string;
-  engagement?: string;
-  q?: string; // 标题/域名模糊搜索
-}
-
-// kt-vuln /api/stats 概览（status 里已连接时返回）。
-export interface KTVulnStats {
-  assets_total: number;
-  cves_total: number;
-  assessments_total: number;
-  findings_total: number;
-}
-
-// kt-vuln 同步随服务资产写入 assets.extra->'ktvuln' 的协同维度子树。
-export interface KTVulnExtra {
-  score?: number; // 价值分 0-100
-  tier?: string; // A/B/C/D/E（同步时已按 manual_tier 合并，展示即最终值）
-  country?: string; // 归属国家两字母码（如 US）
-  biz_type?: string; // 业务类型标签
-  engagement_status?: string; // 作业状态
-  verdict?: string; // 判定
-  engagement_owner?: string; // 协同负责人
-  synced_at?: string; // 最近同步时间（RFC3339）
-}
-
-// ktVulnOf 安全取出 Asset.extra.ktvuln 子树；不存在或形状不对时返回 null。
-export function ktVulnOf(a: Asset): KTVulnExtra | null {
-  const v = a.extra?.ktvuln;
-  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as KTVulnExtra) : null;
-}
-
 // ConvTokenSummary — one conversation's token total (+ profile/date) for merging
 // chat usage into the dashboard token stats. GET /api/tokens/conversations.
 export interface ConvTokenSummary {

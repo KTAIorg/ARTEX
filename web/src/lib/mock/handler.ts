@@ -34,7 +34,7 @@ import type {
   TrafficEvidenceRole,
   TrafficEvidenceSnapshot,
 } from "../types";
-import { ktVulnOf, MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT } from "../types";
+import { MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT } from "../types";
 import * as D from "./data";
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
@@ -451,40 +451,8 @@ function mockAssetCounts(taskID?: string | null): Record<string, number> {
   }, {});
 }
 
-// kv_* 条件按 extra.ktvuln 真实求值（数值比较；字符串语义对齐后端 COALESCE 规则，
-// 即 != 对没有 kt-vuln 数据的资产也算命中）。demo 只需支持 AND 组合——快捷筛选就是 AND。
-function mockKtVulnMatchesDSL(asset: Asset, cond: string): boolean {
-  const m = cond.match(/^kv_([a-z_]+)(==|!=|>=|<=|=|>|<)(.*)$/i);
-  if (!m) return true;
-  const [, key, op, raw] = m;
-  const value = raw.replace(/^"|"$/g, "");
-  const kv = ktVulnOf(asset);
-  if (key === "score") {
-    const score = kv?.score;
-    const n = Number(value);
-    if (score == null || !Number.isFinite(n)) return false;
-    if (op === "==" || op === "=") return score === n;
-    if (op === "!=") return score !== n;
-    if (op === ">") return score > n;
-    if (op === ">=") return score >= n;
-    if (op === "<") return score < n;
-    return score <= n;
-  }
-  const field = kv ? (kv as unknown as Record<string, unknown>)[key] : undefined;
-  const text = typeof field === "string" ? field : "";
-  if (op === "==") return text === value;
-  if (op === "=") return text.toLowerCase().includes(value.toLowerCase());
-  return !text.toLowerCase().includes(value.toLowerCase());
-}
-
 function mockAssetMatchesDSL(asset: Asset, dsl: string): boolean {
-  // kv_* 条件单独求值并从剩余表达式剔除，避免落进下面的宽松子串匹配。
-  const kvConds = dsl.match(/kv_[a-z_]+(?:==|!=|>=|<=|=|>|<)(?:"[^"]*"|\S+)/gi) ?? [];
-  for (const cond of kvConds) {
-    if (!mockKtVulnMatchesDSL(asset, cond)) return false;
-  }
   const query = dsl
-    .replace(/kv_[a-z_]+(?:==|!=|>=|<=|=|>|<)(?:"[^"]*"|\S+)/gi, " ")
     .replaceAll(/[()"]/g, " ")
     .replaceAll(/\b(?:AND|OR)\b/gi, " ")
     .replaceAll(/\b[a-z_][a-z0-9_]*(?:==|!=|>=|<=|=|>|<)/gi, " ")
@@ -2604,65 +2572,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/sync/scopesentry/projects") return { projects: [], tag: {} };
   if (path === "/sync/scopesentry/tasks") return { tasks: [] };
   if (path === "/sync/scopesentry/sync") return { synced: {}, companies: null, warnings: null, errors: null };
-
-  // ── kt-vuln（demo：已连接，静态样例资产）──
-  if (path === "/sync/ktvuln/status")
-    return {
-      configured: true,
-      enabled: true,
-      url: "https://vuln.ktyun.cc",
-      token_hint: "eyJhbG…k9Xz",
-      reachable: true,
-      stats: { assets_total: 48213, cves_total: 291407, assessments_total: 1038422, findings_total: 874 },
-      stats_error: "",
-    };
-  if (path === "/sync/ktvuln/assets") {
-    const rows = D.ktvulnAssets.filter((a) => {
-      const tier = q.get("tier");
-      const verdict = q.get("verdict");
-      const engagement = q.get("engagement");
-      const bizType = q.get("biz_type");
-      const minScore = Number(q.get("min_score") ?? 0);
-      const search = q.get("q")?.toLowerCase();
-      if (tier && a.tier !== tier) return false;
-      if (verdict && a.verdict !== verdict) return false;
-      if (engagement && a.engagement_status !== engagement) return false;
-      if (bizType && a.biz_type !== bizType) return false;
-      if (minScore > 0 && (a.score ?? 0) < minScore) return false;
-      if (search) {
-        const hay = `${a.ip} ${a.title ?? ""} ${(a.hostnames ?? []).join(" ")}`.toLowerCase();
-        if (!hay.includes(search)) return false;
-      }
-      return true;
-    });
-    if (q.get("sort") === "score_desc") rows.sort((x, y) => (y.score ?? 0) - (x.score ?? 0));
-    const limit = Number(q.get("limit") ?? 50);
-    const offset = Number(q.get("offset") ?? 0);
-    return { items: rows.slice(offset, offset + limit), total: rows.length };
-  }
-  if (path === "/sync/ktvuln/sync") {
-    if (b.create_company === false)
-      return {
-        synced: { http_service: 3, other_service: 1, subdomain: 5 },
-        fetched: 6,
-        remote_total: 6,
-        truncated: false,
-        companies: null,
-        scope_added: 0,
-        warnings: null,
-        errors: null,
-      };
-    return {
-      synced: { http_service: 3, other_service: 1, subdomain: 5 },
-      fetched: 6,
-      remote_total: 6,
-      truncated: false,
-      companies: ["ktvuln:盗U盘", "ktvuln:VPN平台", "ktvuln:资金盘", "ktvuln:交易所", "ktvuln:未分类"],
-      scope_added: 11,
-      warnings: null,
-      errors: null,
-    };
-  }
 
   // ── skills ──
   if (path === "/skills" && m === "GET") return { skills: D.skills };

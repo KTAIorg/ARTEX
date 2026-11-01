@@ -60,28 +60,12 @@ var knownNumericFields = map[string]string{
 	"status":      "status_code",
 }
 
-// knownKtVulnStringFields maps DSL field name → assets.extra->'ktvuln' 下的 jsonb 键。
-// kt-vuln 同步写入的协同维度字段；没有 kt-vuln 数据的资产对应键为 NULL。
-var knownKtVulnStringFields = map[string]string{
-	"kv_tier":       "tier",
-	"kv_biz_type":   "biz_type",
-	"kv_engagement": "engagement_status",
-	"kv_verdict":    "verdict",
-}
-
-// knownKtVulnNumericFields maps DSL field name → assets.extra->'ktvuln' 下的 jsonb 键（整数）。
-var knownKtVulnNumericFields = map[string]string{
-	"kv_score": "score",
-}
-
 func isKnownField(f string) bool {
 	f = strings.ToLower(f)
 	_, s := knownStringFields[f]
 	_, a := knownArrayFields[f]
 	_, n := knownNumericFields[f]
-	_, kvS := knownKtVulnStringFields[f]
-	_, kvN := knownKtVulnNumericFields[f]
-	return s || a || n || kvS || kvN || f == "company_id" || f == "task_id"
+	return s || a || n || f == "company_id" || f == "task_id"
 }
 
 // ── tokeniser ────────────────────────────────────────────────────────────────
@@ -345,40 +329,6 @@ func (b *whereBuilder) buildLeaf(e Expr) (string, error) {
 			return "", fmt.Errorf("company_id 需要整数值: %s", e.Value)
 		}
 		return "company_id = " + b.next(n), nil
-	}
-
-	// kt-vuln 协同维度数值字段（extra->'ktvuln' 子树）。键缺失时 ->>'score' 为
-	// NULL，NULL::int 仍是 NULL，比较结果为 NULL 不入选——无 kt-vuln 数据的资产
-	// 对正向比较自然排除。
-	if key, ok := knownKtVulnNumericFields[f]; ok {
-		n, err := strconv.Atoi(e.Value)
-		if err != nil {
-			return "", fmt.Errorf("字段 %s 需要整数值: %s", f, e.Value)
-		}
-		op := e.Op
-		if op == "==" {
-			op = "="
-		}
-		if op != "=" && op != "!=" && op != ">" && op != ">=" && op != "<" && op != "<=" {
-			return "", fmt.Errorf("字段 %s 不支持运算符 %s", f, e.Op)
-		}
-		return fmt.Sprintf("(extra->'ktvuln'->>'%s')::int %s %s", key, op, b.next(n)), nil
-	}
-
-	// kt-vuln 协同维度字符串字段（extra->'ktvuln' 子树）。!= 用 COALESCE 兜底：
-	// 没有 kt-vuln 数据（NULL）的资产应保留在排除条件的结果里。
-	if key, ok := knownKtVulnStringFields[f]; ok {
-		expr := "extra->'ktvuln'->>'" + key + "'"
-		switch e.Op {
-		case "=":
-			return expr + " ILIKE " + b.next("%"+e.Value+"%"), nil
-		case "==":
-			return expr + " = " + b.next(e.Value), nil
-		case "!=":
-			return "COALESCE(" + expr + ",'') NOT ILIKE " + b.next("%"+e.Value+"%"), nil
-		default:
-			return "", fmt.Errorf("字符串字段 %s 不支持运算符 %s", f, e.Op)
-		}
 	}
 
 	// numeric fields

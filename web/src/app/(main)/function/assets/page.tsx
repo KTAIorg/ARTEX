@@ -21,7 +21,6 @@ import { toast } from "sonner";
 import { AssetCard, Chips } from "@/components/asset-card";
 import { AssetDslSearch } from "@/components/asset-dsl-search";
 import { IntelligencePanel } from "@/components/intelligence-panel";
-import { KVEngagementBadge, KVQuickFilter, KVValueBadge, KVVerdictBadge } from "@/components/kv-badges";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import {
   AlertDialog,
@@ -62,7 +61,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
-import { ktVulnOf } from "@/lib/types";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -659,9 +657,8 @@ function AssetsContent() {
         {/* 服务 */}
         <TabsContent value="service" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
           {searchBox}
-          <KVQuickFilter onApply={setQuery} />
           <AssetCard
-            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", "价值", "业务", "国家", "作业状态", "判定", ""]}
+            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
             loaded={loaded}
             total={total}
             page={page}
@@ -675,7 +672,6 @@ function AssetsContent() {
             {slice(tabData("service")).map((a) => {
               const isHttp = a.service_type === "http";
               const svc = a.service_name || (isHttp ? "http" : "") || a.service_type || "";
-              const kv = ktVulnOf(a);
               let domainCell: React.ReactNode = "—";
               if (isHttp && a.url) {
                 domainCell = (
@@ -735,33 +731,6 @@ function AssetsContent() {
                           </span>
                         );
                       })
-                    )}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    {kv ? <KVValueBadge tier={kv.tier} score={kv.score} /> : <span className="text-muted-foreground text-xs">—</span>}
-                  </TableCell>
-                  <TableCell className="max-w-[8rem]" title={kv?.biz_type}>
-                    {kv?.biz_type ? (
-                      <Badge variant="secondary" className="max-w-full truncate text-[10px]">
-                        {kv.biz_type}
-                      </Badge>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{kv?.country ?? "—"}</TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    {kv?.engagement_status ? (
-                      <KVEngagementBadge status={kv.engagement_status} />
-                    ) : (
-                      <span className="text-muted-foreground text-xs">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    {kv?.verdict ? (
-                      <KVVerdictBadge verdict={kv.verdict} />
-                    ) : (
-                      <span className="text-muted-foreground text-xs">—</span>
                     )}
                   </TableCell>
                   <TableCell className="w-8 pl-0">

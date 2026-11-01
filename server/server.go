@@ -994,11 +994,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sync/scopesentry/projects", s.syncSSProjects)
 	mux.HandleFunc("GET /api/sync/scopesentry/tasks", s.syncSSTasks)
 	mux.HandleFunc("POST /api/sync/scopesentry/sync", admin(s.syncSSRun))
-	// 资产同步 — kt-vuln 数据源（纯 REST，配置存 settings KV）
-	mux.HandleFunc("GET /api/sync/ktvuln/status", s.syncKVStatus)
-	mux.HandleFunc("POST /api/sync/ktvuln/datasource", admin(s.syncKVDatasource))
-	mux.HandleFunc("GET /api/sync/ktvuln/assets", s.syncKVAssets)
-	mux.HandleFunc("POST /api/sync/ktvuln/sync", admin(s.syncKVRun))
 	// kt-vuln 用户令牌透传代理：/api/vuln/* → {VULN_PROXY_TARGET}/api/*（vulnproxy.go）。
 	// 挂在 /api/ 下天然过 requireAuth；用户 identity 令牌从 X-Identity-Token 取。
 	mux.HandleFunc("/api/vuln/", s.vulnProxy)
