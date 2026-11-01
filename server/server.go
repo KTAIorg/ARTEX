@@ -790,6 +790,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/assets", s.attachTaskAssets)
 	mux.HandleFunc("DELETE /api/tasks/{id}/assets/{assetID}", s.detachTaskAsset)
 	mux.HandleFunc("GET /api/tasks/{id}/intent-assets", s.taskIntentAssets)
+	// 任务 Vuln 资产工作集：下发任务时的 kt-vuln 资产快照（事实源在 vuln.ktyun.cc）
+	mux.HandleFunc("POST /api/tasks/{id}/vuln-workset", s.pinTaskVulnWorkset)
+	mux.HandleFunc("GET /api/tasks/{id}/vuln-workset", s.listTaskVulnWorksets)
 
 	// 工作空间文件管理器（针对 workDir）
 	mux.HandleFunc("GET /api/workspace/list", s.wsList)
