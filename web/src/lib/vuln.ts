@@ -49,6 +49,29 @@ export interface VulnCve {
   };
 }
 
+// CVE 全量目录条目（/api/cve-catalog，NVD 同步字典）。severity 可能为 null
+// （NVD 未打分）；cvss_* 仅在需要时使用，列表渲染不展示。
+export interface VulnCveCatalogItem {
+  cve_id: string;
+  title?: string | null;
+  severity?: number | null;
+  published?: string | null;
+  published_year?: number | null;
+  kev?: boolean | null;
+  source?: string | null;
+  cvss_vector?: string | null;
+  cvss_version?: string | null;
+}
+
+// 与 kt-vuln cve-catalog 支持的检索参数对齐（page/page_size 走方法入参）。
+export interface VulnCveCatalogFilters {
+  q?: string;
+  year?: number;
+  min_severity?: number;
+  sort?: string;
+  order?: string;
+}
+
 // 与 kt-vuln ListAssets 支持的过滤参数对齐。tier 按契约保留发送
 // （当前部署版忽略该参数，后端补上后前端无需改动）。
 export interface VulnAssetFilters {
@@ -201,6 +224,27 @@ export const vuln = {
     const qs = p.toString();
     return vulnHttp<{ items: VulnCve[] | null }>(`/cves${qs ? `?${qs}` : ""}`).then((r) => r.items ?? []);
   },
+
+  // CVE 全量目录（NVD 同步字典，28 万+ 条）：服务端分页检索，page 从 1 起、
+  // page_size 上限 200（kt-vuln 侧 >200 回落 50，前端选择器最大档即 200）。
+  cveCatalog: (page: number, pageSize: number, filters: VulnCveCatalogFilters = {}) => {
+    const p = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    for (const [k, v] of Object.entries(filters)) {
+      if (v === undefined || v === "") continue;
+      if (typeof v === "number" && !Number.isFinite(v)) continue;
+      p.set(k, String(v));
+    }
+    return vulnHttp<{
+      items: VulnCveCatalogItem[] | null;
+      total: number;
+      page: number;
+      page_size: number;
+    }>(`/cve-catalog?${p.toString()}`).then((r) => ({ items: r.items ?? [], total: r.total ?? 0 }));
+  },
+
+  // CVE 全量目录的发布年份桶（年份下拉数据源）。
+  cveCatalogYears: () =>
+    vulnHttp<{ items: { year: number; count: number }[] | null }>("/cve-catalog/years").then((r) => r.items ?? []),
 
   // 人工评级（单资产）：404 = 资产不存在。
   rate: (assetId: number, tier: VulnRatingTier, note?: string) =>
