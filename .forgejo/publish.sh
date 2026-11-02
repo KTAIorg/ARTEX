@@ -18,7 +18,7 @@ echo "=== 1/4 web build $(date -u +%H:%M:%SZ)"
 tar -cf - -C web --exclude=node_modules --exclude=out . \
   | docker run --rm -i -e npm_config_registry=https://registry.npmmirror.com \
     docker.m.daocloud.io/library/node:22-bookworm-slim \
-    sh -ec 'set -eu; mkdir -p /src && tar xf - -C /src && cd /src && npm ci --no-audit --no-fund && npm run build:static && tar cf - out' \
+    sh -ec 'set -eu; mkdir -p /src && tar xf - -C /src && cd /src && npm ci --no-audit --no-fund 1>&2 && npm run build:static 1>&2 && tar cf - out' \
   > /tmp/web-out.tar || fail "web build 失败"
 rm -rf web/out && mkdir -p web/out && tar -xf /tmp/web-out.tar -C web/out --strip-components=1
 [ -f web/out/index.html ] || fail "web/out/index.html 缺失"
