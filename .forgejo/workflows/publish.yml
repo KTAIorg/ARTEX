@@ -1,0 +1,9 @@
+# 说明文件：构建入口在 ci.ktyun.cc 调度仓（github-hook + ci-scheduler dispatch），
+# 由 docker runner 克隆 SOURCE_SHA 后执行 .forgejo/publish.sh。本文件不要挂构建步骤。
+name: publish
+on: [workflow_dispatch]
+jobs:
+  placeholder:
+    runs-on: docker
+    steps:
+      - run: echo "入口在调度器，见 .forgejo/publish.sh"
