@@ -1,6 +1,8 @@
 #!/bin/sh
-# ARTEX CI 发布脚本（在 ci.ktyun.cc docker runner 上执行）。
-# 产物：oci.ktyun.cc/ktaiorg/ARTEX:prod-sha-<short>（amd64，含 webui embed）
+# ARTEX CI 发布脚本（ci.ktyun.cc docker runner）。
+# 产物：oci.ktyun.cc/ktaiorg/ARTEX:prod-sha-<short>（amd64，webui embed）
+# 注意：runner 的 daemon 看不见作业目录；容器构建一律 tar 进 tar 出。docker build 的
+# context 由 docker CLI 客户端侧打包上传，不受影响。
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -13,19 +15,24 @@ tag="prod-sha-${short}"
 ref="oci.ktyun.cc/ktaiorg/ARTEX:${tag}"
 
 echo "=== 1/4 web build $(date -u +%H:%M:%SZ)"
-docker run --rm -v "$PWD:/src" -w /src/web -e npm_config_registry=https://registry.npmmirror.com \
-  docker.m.daocloud.io/library/node:22-bookworm-slim \
-  sh -ec 'npm ci --no-audit --no-fund && npm run build:static' || fail "web build 失败"
-[ -d web/out ] || fail "web/out 缺失"
+tar -cf - -C web --exclude=node_modules --exclude=out . \
+  | docker run --rm -i -e npm_config_registry=https://registry.npmmirror.com \
+    docker.m.daocloud.io/library/node:22-bookworm-slim \
+    sh -ec 'set -eu; mkdir -p /src && tar xf - -C /src && cd /src && npm ci --no-audit --no-fund && npm run build:static && tar cf - out' \
+  > /tmp/web-out.tar || fail "web build 失败"
+rm -rf web/out && mkdir -p web/out && tar -xf /tmp/web-out.tar -C web/out --strip-components=1
+[ -f web/out/index.html ] || fail "web/out/index.html 缺失"
 rm -rf server/webui/dist && mkdir -p server/webui && cp -r web/out server/webui/dist
 
 echo "=== 2/4 go build $(date -u +%H:%M:%SZ)"
 mkdir -p dist/amd64
-docker run --rm -v "$PWD:/src" -w /src -e CGO_ENABLED=0 -e GOFLAGS=-mod=mod \
-  -e GOPROXY=https://goproxy.cn,direct -e HOME=/tmp \
-  docker.m.daocloud.io/library/golang:1.26-bookworm \
-  go build -trimpath -tags embedui -o dist/amd64/artex ./cmd/artex || fail "go build 失败"
-[ -x dist/amd64/artex ] || fail "二进制缺失"
+tar -cf - --exclude=.git --exclude=node_modules --exclude='dist/*-arm64' . \
+  | docker run --rm -i -e CGO_ENABLED=0 -e GOFLAGS=-mod=mod -e GOPROXY=https://goproxy.cn,direct -e HOME=/tmp \
+    docker.m.daocloud.io/library/golang:1.26-bookworm \
+    sh -ec 'set -eu; mkdir -p /src && tar xf - -C /src && cd /src && go build -trimpath -tags embedui -o /out-artex ./cmd/artex && cat /out-artex' \
+  > dist/amd64/artex || fail "go build 失败"
+[ -s dist/amd64/artex ] || fail "二进制为空"
+chmod +x dist/amd64/artex
 
 echo "=== 3/4 docker build ${ref} $(date -u +%H:%M:%SZ)"
 timeout 3600 docker build -t "${ref}" . || fail "docker build 失败"
