@@ -175,10 +175,12 @@ func vulnTokenReset() {
 	vulnTokenCache.Unlock()
 }
 
-// vulnHTTPClient 独立 client：集群内 svc 直连，响应头 30s 超时，连接复用。
+// vulnHTTPClient 独立 client：集群内 svc 直连，连接复用。响应头超时对齐工具层
+// 最大预算（150s）——/api/assets 带 engagement/cve 过滤 + sort 时 kt-vuln 侧实测
+// 可跑 70s+（2026-11-02 真实 Agent 对话 E2E 发现 30s 会误杀慢查询）。
 var vulnHTTPClient = &http.Client{
 	Transport: &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 150 * time.Second,
 		IdleConnTimeout:       10 * time.Minute,
 	},
 }
