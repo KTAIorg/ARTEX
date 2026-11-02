@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARTEX CI 发布脚本（ci.ktyun.cc docker runner）。
-# 产物：oci.ktyun.cc/ktaiorg/ARTEX:prod-sha-<short>（amd64，webui embed）
+# 产物：oci.ktyun.cc/ktaiorg/artex:prod-sha-<short>（amd64，webui embed）
 # 注意：runner 的 daemon 看不见作业目录；容器构建一律 tar 进 tar 出。docker build 的
 # context 由 docker CLI 客户端侧打包上传，不受影响。
 set -eu
@@ -12,7 +12,7 @@ sha="${SOURCE_SHA:-}"
 case "$sha" in *[!0-9a-f]*|"") fail "SOURCE_SHA required";; esac
 short=$(printf '%s' "$sha" | cut -c1-12)
 tag="prod-sha-${short}"
-ref="oci.ktyun.cc/ktaiorg/ARTEX:${tag}"
+ref="oci.ktyun.cc/ktaiorg/artex:${tag}"
 
 echo "=== 1/4 web build $(date -u +%H:%M:%SZ)"
 tar -cf - -C web --exclude=node_modules --exclude=out . \
@@ -45,7 +45,7 @@ digest=$(OCI_BEARER="$(cat /var/run/secrets/zot/token)" \
   python3 .forgejo/workflows/oci-push.py \
   --archive "${work}/image.tar" \
   --registry http://zot.kt-oci-registry.svc.cluster.local:5000 \
-  --repository ktaiorg/ARTEX \
+  --repository ktaiorg/artex \
   --tag "${tag}" --kind docker) || fail "推 Zot 失败"
 echo "DIGEST ${digest}"
-echo "镜像: oci.ktyun.cc/ktaiorg/ARTEX:${tag}"
+echo "镜像: oci.ktyun.cc/ktaiorg/artex:${tag}"
