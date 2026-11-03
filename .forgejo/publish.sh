@@ -51,13 +51,15 @@ echo "DIGEST ${digest}"
 echo "镜像: oci.ktyun.cc/ktaiorg/artex:${tag}"
 
 # ---- CD：推完镜像自动滚动双机（CI=CD 闭环，kt-k8s#190）----
-# 认证：Zot SA bearer（broker 铸造、CI 独有；webhook 侧向 oci.ktyun.cc 验票）。
-if [ -f /var/run/secrets/zot/token ]; then
-  zot_tok=$(cat /var/run/secrets/zot/token)
+# 认证：Forgejo job OIDC 票（audience=zot，zot PR#49 已认 ci.ktyun.cc issuer）。
+if curl -sf --max-time 5 -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+     "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=zot" >/tmp/cd_oidc.json 2>/dev/null; then
+  oidc_tok=$(python3 -c "import json;print(json.load(open('/tmp/cd_oidc.json')).get('value',''))")
+  rm -f /tmp/cd_oidc.json
   body=$(printf '{"target":"artex-both","image":"%s"}' "${ref}")
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "${CD_WEBHOOK_URL:-http://69.194.14.91:39876}/deploy" -H "Authorization: Bearer $zot_tok" -H 'Content-Type: application/json' -d "$body" || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "${CD_WEBHOOK_URL:-http://69.194.14.91:39876}/deploy" -H "Authorization: Bearer $oidc_tok" -H 'Content-Type: application/json' -d "$body" || true)
   echo "=== CD webhook: $code (artex-both ${ref})"
   [ "$code" = "202" ] || echo "!!! CD webhook 非 202：镜像已推送，需人工滚动"
 else
-  echo "=== CD 跳过（无 zot token）"
+  echo "=== CD 跳过（无 job OIDC 通道；workflow 需 enable-openid-connect: true）"
 fi
