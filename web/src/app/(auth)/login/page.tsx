@@ -33,6 +33,25 @@ function formatCountdown(seconds: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+// tgDeepLink 把 https://t.me/<bot>?start=<token> 转成 tg:// 深链，本机打开可直启
+// Telegram 应用，跳过浏览器中转页；二维码仍用 https 链接（相机扫码需要）。
+function tgDeepLink(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:" && u.pathname.split("/").filter(Boolean).length === 1) {
+      const domain = u.pathname.split("/").filter(Boolean)[0];
+      const start = u.searchParams.get("start");
+      const dl = new URL("tg://resolve");
+      dl.searchParams.set("domain", domain);
+      if (start) dl.searchParams.set("start", start);
+      return dl.toString();
+    }
+  } catch {
+    // 解析失败原样返回，按钮行为退化为浏览器打开
+  }
+  return url;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [password, setPassword] = useState("");
@@ -369,20 +388,22 @@ export default function LoginPage() {
                         {identityChallenge.displayCode}
                       </p>
                       <p className="text-xs leading-relaxed text-muted-foreground">
-                        Telegram 扫码或点击本机打开，核对校验码后确认登录
+                        点击下方按钮在 Telegram 确认，核对校验码后登录；手机用户可扫上方二维码
                       </p>
                     </div>
 
+                    <Button
+                      type="button"
+                      size="lg"
+                      className="h-12 w-full text-base font-semibold"
+                      disabled={identityPhase !== "ready"}
+                      onClick={() => window.open(tgDeepLink(identityChallenge.telegram.qrUrl), "_blank")}
+                    >
+                      在本机 Telegram 中打开
+                    </Button>
+
                     <div className="flex items-center justify-between">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={identityPhase !== "ready"}
-                        onClick={() => window.open(identityChallenge.telegram.qrUrl, "_blank")}
-                      >
-                        本机打开
-                      </Button>
+                      <span className="text-xs text-muted-foreground">二维码 {formatCountdown(identitySecondsLeft)} 后失效</span>
                       <span className="font-mono text-sm text-muted-foreground" aria-live="polite">
                         {formatCountdown(identitySecondsLeft)}
                       </span>
