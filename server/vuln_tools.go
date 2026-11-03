@@ -72,6 +72,7 @@ var vulnToolKeys = map[string]bool{
 	"vuln_search_assets": true,
 	"vuln_cve_detail":    true,
 	"vuln_enrich_cve":    true,
+	"shodan_collect":     true,
 }
 
 // vulnCreds 读取只读服务账号 env（成对才算配齐）。

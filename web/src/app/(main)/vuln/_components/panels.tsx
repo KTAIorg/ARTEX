@@ -604,6 +604,39 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
   const [kevOnly, setKevOnly] = React.useState(false);
   const [category, setCategory] = React.useState("all");
   const [drill, setDrill] = React.useState<VulnCve | null>(null);
+  // Shodan 采集（#192）：按 CVE 影响组件入队，admin 才能成功（服务端 admin 门）。
+  const [collecting, setCollecting] = React.useState<string>("");
+
+  const collectCve = async (c: VulnCve, affected: [string, string[]][]) => {
+    if (affected.length === 0) {
+      toast.error("该 CVE 无影响组件信息，无法构造采集查询");
+      return;
+    }
+    const product = affected[0][0].trim().toLowerCase();
+    if (!product) {
+      toast.error("影响组件名为空，无法构造采集查询");
+      return;
+    }
+    const query = `${product} country:CN`;
+    setCollecting(c.cve_id);
+    try {
+      const resp = await fetch("/api/vuln/shodan-collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, cve_id: c.cve_id, max_pages: 5 }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        toast.error(String(data?.error ?? `入队失败（HTTP ${resp.status}）`));
+        return;
+      }
+      toast.success(`已入队采集（job #${data.job_id}）：${query}，完成后资产自动入库`);
+    } catch (e) {
+      toast.error(`采集入队失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setCollecting("");
+    }
+  };
   const reqRef = React.useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey 是外部「刷新」按钮的显式重载触发器。
@@ -753,9 +786,25 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
                       <VulnSurfaceCounts surface={c.surface} />
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="outline" size="sm" className="h-7" onClick={() => setDrill(c)}>
-                        查看资产
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          disabled={collecting === c.cve_id}
+                          onClick={() => collectCve(c, affected)}
+                          title={
+                            affected.length > 0
+                              ? `按影响组件「${affected[0][0]}」采集互联网暴露资产（异步，完成后进入资产列表）`
+                              : "该 CVE 无影响组件信息，无法构造采集查询"
+                          }
+                        >
+                          {collecting === c.cve_id ? "入队中…" : "采集"}
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-7" onClick={() => setDrill(c)}>
+                          查看资产
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );

@@ -745,6 +745,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/rollback", admin(s.updateRollback))
 	mux.HandleFunc("GET /api/update/stream", s.updateStream)
 
+	// Shodan 采集（#192）：入队花 credit，admin 门；状态查询同为 admin。
+	mux.HandleFunc("POST /api/vuln/shodan-collect", admin(s.shodanCollect))
+	mux.HandleFunc("GET /api/vuln/shodan-collect/status", admin(s.shodanCollectStatus))
+
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
