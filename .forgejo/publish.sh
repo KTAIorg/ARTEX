@@ -50,13 +50,14 @@ digest=$(OCI_BEARER="$(cat /var/run/secrets/zot/token)" \
 echo "DIGEST ${digest}"
 echo "镜像: oci.ktyun.cc/ktaiorg/artex:${tag}"
 
-# ---- CD：推完镜像经 HMAC webhook 自动滚动双机（CI=CD 闭环，kt-k8s#190）----
-if [ -n "${CD_WEBHOOK_HMAC:-}" ]; then
+# ---- CD：推完镜像自动滚动双机（CI=CD 闭环，kt-k8s#190）----
+# 认证：Zot SA bearer（broker 铸造、CI 独有；webhook 侧向 oci.ktyun.cc 验票）。
+if [ -f /var/run/secrets/zot/token ]; then
+  zot_tok=$(cat /var/run/secrets/zot/token)
   body=$(printf '{"target":"artex-both","image":"%s"}' "${ref}")
-  sig=$(printf '%s' "$body" | python3 -c "import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest())" "$CD_WEBHOOK_HMAC")
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "${CD_WEBHOOK_URL:-http://69.194.14.91:39876}/deploy" -H "X-CD-Signature: $sig" -H 'Content-Type: application/json' -d "$body" || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "${CD_WEBHOOK_URL:-http://69.194.14.91:39876}/deploy" -H "Authorization: Bearer $zot_tok" -H 'Content-Type: application/json' -d "$body" || true)
   echo "=== CD webhook: $code (artex-both ${ref})"
   [ "$code" = "202" ] || echo "!!! CD webhook 非 202：镜像已推送，需人工滚动"
 else
-  echo "=== CD 未启用（无 CD_WEBHOOK_HMAC）：镜像已推送，滚动需手动"
+  echo "=== CD 跳过（无 zot token）"
 fi
