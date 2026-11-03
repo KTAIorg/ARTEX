@@ -49,3 +49,10 @@ digest=$(OCI_BEARER="$(cat /var/run/secrets/zot/token)" \
   --tag "${tag}" --kind docker) || fail "推 Zot 失败"
 echo "DIGEST ${digest}"
 echo "镜像: oci.ktyun.cc/ktaiorg/artex:${tag}"
+
+# ---- CD：自动滚动双机（kt-k8s#190/#192 统一部署通道）----
+if [ -n "${DEPLOY_ENABLED:-}" ]; then
+  echo "=== CD rollout artex-both ${ref} $(date -u +%H:%M:%SZ)"
+  bash /workspace/KTAIorg/ci-scheduler/source/deploy/pub-servers/rollout.sh artex-both "${ref}" || \
+    echo "!!! CD 失败：镜像已推送，需人工滚动（rollout.sh artex-both ${ref}）"
+fi
