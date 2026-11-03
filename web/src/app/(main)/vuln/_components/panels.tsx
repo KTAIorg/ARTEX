@@ -604,26 +604,28 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
   const [kevOnly, setKevOnly] = React.useState(false);
   const [category, setCategory] = React.useState("all");
   const [drill, setDrill] = React.useState<VulnCve | null>(null);
-  // Shodan 采集（#192）：按 CVE 影响组件入队，admin 才能成功（服务端 admin 门）。
+  // Shodan 采集（#192）：弹窗确认查询后入队（无影响组件也可手填），admin 才能成功。
   const [collecting, setCollecting] = React.useState<string>("");
+  const [collectTarget, setCollectTarget] = React.useState<{ cve: VulnCve; query: string } | null>(null);
 
   const collectCve = async (c: VulnCve, affected: [string, string[]][]) => {
-    if (affected.length === 0) {
-      toast.error("该 CVE 无影响组件信息，无法构造采集查询");
+    const product = affected.length > 0 ? affected[0][0].trim().toLowerCase() : "";
+    setCollectTarget({ cve: c, query: product ? `${product} country:CN` : "" });
+  };
+
+  const submitCollect = async () => {
+    if (!collectTarget) return;
+    const query = collectTarget.query.trim();
+    if (!query) {
+      toast.error("请填写 Shodan 查询体，如 \"log4j country:CN\"");
       return;
     }
-    const product = affected[0][0].trim().toLowerCase();
-    if (!product) {
-      toast.error("影响组件名为空，无法构造采集查询");
-      return;
-    }
-    const query = `${product} country:CN`;
-    setCollecting(c.cve_id);
+    setCollecting(collectTarget.cve.cve_id);
     try {
       const resp = await fetch("/api/vuln/shodan-collect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, cve_id: c.cve_id, max_pages: 5 }),
+        body: JSON.stringify({ query, cve_id: collectTarget.cve.cve_id, max_pages: 5 }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
@@ -631,6 +633,7 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
         return;
       }
       toast.success(`已入队采集（job #${data.job_id}）：${query}，完成后资产自动入库`);
+      setCollectTarget(null);
     } catch (e) {
       toast.error(`采集入队失败：${String((e as Error)?.message ?? e)}`);
     } finally {
@@ -791,15 +794,10 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
                           variant="outline"
                           size="sm"
                           className="h-7"
-                          disabled={collecting === c.cve_id}
                           onClick={() => collectCve(c, affected)}
-                          title={
-                            affected.length > 0
-                              ? `按影响组件「${affected[0][0]}」采集互联网暴露资产（异步，完成后进入资产列表）`
-                              : "该 CVE 无影响组件信息，无法构造采集查询"
-                          }
+                          title="按影响组件构造 Shodan 查询（可修改），入队后自动采集入库"
                         >
-                          {collecting === c.cve_id ? "入队中…" : "采集"}
+                          采集
                         </Button>
                         <Button variant="outline" size="sm" className="h-7" onClick={() => setDrill(c)}>
                           查看资产
@@ -820,6 +818,44 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
           </Table>
         </div>
       </Card>
+
+      {/* Shodan 采集确认弹窗：查询可编辑，无影响组件时可手填 */}
+      <Dialog open={collectTarget !== null} onOpenChange={(v) => !v && setCollectTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>从 Shodan 采集 · {collectTarget?.cve.cve_id}</DialogTitle>
+            <DialogDescription>
+              按 Shodan 查询体采集互联网暴露资产并自动入库（每页 100 条、1 credit，默认 5 页）。
+              同一查询的未完成任务会幂等合并，不重复扣费。
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="shodan-collect-query">Shodan 查询体</FieldLabel>
+              <Input
+                id="shodan-collect-query"
+                autoFocus
+                placeholder='如 "log4j country:CN"'
+                value={collectTarget?.query ?? ""}
+                onChange={(e) =>
+                  setCollectTarget((t) => (t ? { ...t, query: e.target.value } : t))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitCollect();
+                }}
+              />
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setCollectTarget(null)}>
+              取消
+            </Button>
+            <Button size="sm" disabled={collecting !== ""} onClick={submitCollect}>
+              {collecting !== "" ? "入队中…" : "入队采集"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
