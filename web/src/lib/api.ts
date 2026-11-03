@@ -52,8 +52,6 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
-  RepeaterSendRequest,
-  RepeaterSendResponse,
   IntelligencePage,
   IntentAsset,
   InterceptApprovalFilter,
@@ -80,6 +78,8 @@ import type {
   NotificationMeta,
   PromptVar,
   PromptVersion,
+  RepeaterSendRequest,
+  RepeaterSendResponse,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -88,6 +88,7 @@ import type {
   SSProject,
   SSTask,
   Stats,
+  SystemMetrics,
   Task,
   TaskArchive,
   TaskArchivePage,
@@ -116,7 +117,6 @@ import type {
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
-  SystemMetrics,
 } from "@/lib/types";
 
 /**
@@ -156,6 +156,8 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (r.status === 401) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
+      // 同步清 identity 令牌（auth.clearToken 的对应项，见 lib/auth.ts）。
+      localStorage.removeItem("artex.identity_token");
       document.cookie = "artex_token=; path=/; max-age=0";
       window.location.href = "/login";
     }
@@ -316,6 +318,9 @@ export const api = {
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  // KT Identity 换发：拿 identity opaque token 换 ARTEX 自己的 JWT（与账密登录产物同构），
+  // roles 为 identity 角色映射结果（admin/operator/viewer），前端仅用于导航显隐。
+  identityExchange: (token: string) => post<{ token: string; roles: string[] }>("/auth/identity/exchange", { token }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -387,11 +392,19 @@ export const api = {
     }),
   taskTemplates: () => get<{ templates: TaskTemplate[] }>("/task-templates").then((r) => arr(r.templates)),
   createTaskTemplate: (
-    input: Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">,
+    input: Pick<
+      TaskTemplate,
+      "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+    >,
   ) => post<TaskTemplate>("/task-templates", input),
   updateTaskTemplate: (
     id: number,
-    input: Partial<Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">>,
+    input: Partial<
+      Pick<
+        TaskTemplate,
+        "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+      >
+    >,
   ) => patch<TaskTemplate>(`/task-templates/${id}`, input),
   deleteTaskTemplate: (id: number) => del<{ deleted: number }>(`/task-templates/${id}`),
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>

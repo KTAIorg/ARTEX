@@ -40,6 +40,8 @@ func (s *Server) webuiHandler() http.Handler {
 				return
 			}
 		}
+		// SPA 兜底输出的是 index.html，同样禁缓存，避免发版后浏览器沿用旧 bundle
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFileFS(w, r, root, "index.html")
 	})
 }
@@ -54,6 +56,10 @@ func serveFileIfExists(w http.ResponseWriter, r *http.Request, fsys fs.FS, name 
 	_ = f.Close()
 	if statErr != nil || st.IsDir() {
 		return false
+	}
+	// HTML 入口禁缓存（_next/static 等哈希名资源保持默认缓存策略）
+	if strings.HasSuffix(name, ".html") {
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 	http.ServeFileFS(w, r, fsys, name)
 	return true

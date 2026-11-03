@@ -19,6 +19,18 @@ import {
 } from "@/components/ui/command";
 import type { NavMainItem } from "@/navigation/sidebar/sidebar-items";
 import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
+import { auth } from "@/lib/auth";
+
+// 与 app-sidebar 同一规则：无 roles = 全员可见；命中任一角色即保留。
+// 模块级构建发生在客户端，auth.getRoles() 可同步读 localStorage。
+const roleFilteredItems = (() => {
+  const roles = auth.getRoles();
+  const visible = (allowed?: string[]) => !allowed || allowed.some((r) => roles.includes(r));
+  return sidebarItems
+    .filter((group) => visible(group.roles))
+    .map((group) => ({ ...group, items: group.items.filter((item) => visible(item.roles)) }))
+    .filter((group) => group.items.length > 0);
+})();
 
 type SearchItem = {
   id: string;
@@ -30,13 +42,13 @@ type SearchItem = {
   newTab?: boolean;
 };
 
-const sidebarGroupLabels = new Set(sidebarItems.flatMap((group) => (group.label ? [group.label] : [])));
+const sidebarGroupLabels = new Set(roleFilteredItems.flatMap((group) => (group.label ? [group.label] : [])));
 
 function getSubItemGroup(groupLabel: string | undefined, itemTitle: string) {
   return sidebarGroupLabels.has(itemTitle) ? (groupLabel ?? "Other") : itemTitle;
 }
 
-const searchItems: SearchItem[] = sidebarItems.flatMap((group) =>
+const searchItems: SearchItem[] = roleFilteredItems.flatMap((group) =>
   group.items.flatMap((item) => {
     if (item.subItems) {
       return item.subItems.map((sub) => ({

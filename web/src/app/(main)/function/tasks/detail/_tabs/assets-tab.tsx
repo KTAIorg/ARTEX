@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 
 import { AssetDslSearch } from "@/components/asset-dsl-search";
+import { KVValueBadge, KVVerdictBadge } from "@/components/kv-badges";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
 import {
   AlertDialog,
@@ -43,6 +44,7 @@ import { parseCompanyScopeText } from "@/lib/company-scope";
 import { taskAssetSourceLabel } from "@/lib/task-assets";
 import type { Asset, NewAssetType } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { type VulnWorksetItem, vuln } from "@/lib/vuln";
 
 const PAGE_SIZES = [25, 50, 100, 200];
 
@@ -336,6 +338,95 @@ function AddTaskAssetsSheet({
         </SheetFooter>
       </SheetContent>
     </Sheet>
+  );
+}
+
+// 任务下发时从 Vuln 情报站带来的资产快照（vuln-workset）。快照是下发那一刻的凭证：
+// 事实源始终在 vuln.ktyun.cc；端点未实现/无数据时整个区块不渲染，不打扰任务详情。
+function VulnWorksetSection({ taskId }: { taskId: string }) {
+  const [items, setItems] = React.useState<VulnWorksetItem[] | null>(null);
+
+  React.useEffect(() => {
+    let active = true;
+    vuln
+      .taskWorkset(taskId)
+      .then((r) => {
+        if (active) setItems(r);
+      })
+      .catch(() => {
+        if (active) setItems([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [taskId]);
+
+  if (!items || items.length === 0) return null;
+
+  return (
+    <Card className="py-0">
+      <CardContent className="p-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-2 pt-4">
+          <div className="min-w-0">
+            <h3 className="font-medium text-sm">Vuln 工作集</h3>
+            <p className="text-muted-foreground text-xs">事实源在 vuln.ktyun.cc（快照仅下发时凭证，不随后台更新）</p>
+          </div>
+          <Badge variant="outline">{items.length} 条</Badge>
+        </div>
+        <div className="max-h-64 overflow-auto">
+          <Table>
+            <TableHeader className="sticky top-0 z-10 bg-card">
+              <TableRow>
+                <TableHead className="w-16">来源</TableHead>
+                <TableHead>目标</TableHead>
+                <TableHead>标题</TableHead>
+                <TableHead>价值</TableHead>
+                <TableHead>CVE</TableHead>
+                <TableHead>判定</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {items.map((item) => (
+                <TableRow key={item.vuln_asset_id}>
+                  <TableCell>
+                    <Badge variant="outline">快照</Badge>
+                  </TableCell>
+                  <TableCell className="max-w-xs">
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block truncate font-mono text-xs underline-offset-2 hover:underline"
+                      title={item.url}
+                    >
+                      {item.url}
+                    </a>
+                    <span className="text-muted-foreground text-[10px]">
+                      {item.host}
+                      {item.port ? `:${item.port}` : ""}
+                    </span>
+                  </TableCell>
+                  <TableCell className="max-w-48 truncate text-xs" title={item.title}>
+                    {item.title || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <KVValueBadge tier={item.tier || item.manual_tier || undefined} score={item.score} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{item.cve || "—"}</TableCell>
+                  <TableCell>
+                    {item.verdict ? (
+                      <KVVerdictBadge verdict={item.verdict} />
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -674,6 +765,8 @@ export function AssetsTab({ taskId }: { taskId: string }) {
           </AssetCard>
         </TabsContent>
       </Tabs>
+
+      <VulnWorksetSection taskId={taskId} />
 
       <AddTaskAssetsSheet onAttached={refresh} onOpenChange={setAddOpen} open={addOpen} taskId={taskId} />
 

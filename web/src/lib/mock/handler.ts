@@ -952,7 +952,8 @@ function controlMockTask(id: string, action: "pause" | "resume"): BatchControlIt
     task.status = "paused";
     task.engine_mode = "paused";
     if (task.run_segment_started_unix && task.run_segment_started_unix > 0) {
-      task.active_run_seconds = (task.active_run_seconds ?? 0) + Math.max(0, Math.floor(Date.now() / 1000) - task.run_segment_started_unix);
+      task.active_run_seconds =
+        (task.active_run_seconds ?? 0) + Math.max(0, Math.floor(Date.now() / 1000) - task.run_segment_started_unix);
       task.run_seconds = task.active_run_seconds;
     }
     task.run_segment_started_unix = 0;
@@ -1117,6 +1118,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── auth：让 demo 直接进主界面 ──
   if (path === "/auth/status") return { initialized: true };
   if (path === "/auth/login" || path === "/auth/init") return { token: "mock-demo" };
+  if (path === "/auth/identity/exchange") return { token: "mock-artex-identity-token" };
   if (path === "/auth/change-password") return { ok: true };
 
   // ── task cold archives ──
@@ -1400,7 +1402,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "task-templates" && seg.length === 2 && m === "PATCH") {
     const template = mockTaskTemplates.find((item) => item.id === Number(seg[1]));
     if (!template) return {};
-    const has = (key: string) => Object.prototype.hasOwnProperty.call(b, key);
+    const has = (key: string) => Object.hasOwn(b, key);
     const nameValue = has("name") ? mockStringField(b.name, "模板名称") : undefined;
     const descriptionValue = has("description") ? mockStringField(b.description, "模板描述") : undefined;
     const goalValue = has("goal") ? mockStringField(b.goal, "模板目标") : undefined;
@@ -1409,7 +1411,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       throw new Error("intercept_rules 必须是数组");
     }
     const name = nameValue === undefined || b.name === null ? template.name : normalizedTemplateName(nameValue);
-    const description = descriptionValue === undefined || b.description === null ? template.description : descriptionValue.trim();
+    const description =
+      descriptionValue === undefined || b.description === null ? template.description : descriptionValue.trim();
     const goal = goalValue === undefined || b.goal === null ? template.goal : goalValue.trim();
     if (!name || !description || !goal) throw new Error("请填写模板名称、描述和目标");
     if (
@@ -1456,7 +1459,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "tasks" && seg.length === 2 && m === "PATCH") {
     const task = mockTasks.find((item) => item.id === seg[1]);
     if (!task) throw new Error("任务不存在");
-    const has = (key: string) => Object.prototype.hasOwnProperty.call(b, key);
+    const has = (key: string) => Object.hasOwn(b, key);
     if (has("name") && b.name !== null && typeof b.name !== "string") throw new Error("任务名称必须是字符串");
     if (has("remark") && b.remark !== null && typeof b.remark !== "string") throw new Error("备注必须是字符串");
     if (has("pinned") && b.pinned !== null && typeof b.pinned !== "boolean") throw new Error("pinned 必须是布尔值");
