@@ -27,6 +27,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolVulnListCves(),
 		s.toolVulnSearchAssets(),
 		s.toolVulnCveDetail(),
+		s.toolExpListMatching(),
 	}
 }
 
@@ -37,6 +38,7 @@ var platformToolKeys = []string{
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
 	"vuln_list_cves", "vuln_search_assets", "vuln_cve_detail",
+	"exp_list_matching",
 }
 
 // ---- assets ----
