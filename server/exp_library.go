@@ -11,11 +11,14 @@ package server
 // scope 与拦截层的职责），但所有对外输出都带上这一纪律说明。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
+	vrange "github.com/Autumn-27/artex/range"
 )
 
 // ExpLibrary is the EXP asset-library service bound to the shared PG handle.
@@ -75,19 +78,77 @@ func validateExpAsset(e *db.ExpAsset) error {
 	return nil
 }
 
-// CreateExpAsset validates and inserts a new EXP.
-func (l *ExpLibrary) CreateExpAsset(e *db.ExpAsset) (int64, error) {
+// =====================================================================
+// 写路径选项：靶场闸门（EXP 质量闸门，防能力腐烂）
+// =====================================================================
+
+// ExpWriteOption 是 Create/Update 写路径的可选行为开关。
+type ExpWriteOption func(*expWriteConfig)
+
+type expWriteConfig struct{ rangeGate bool }
+
+// WithRangeGate 在入库/更新前强制过靶场闸门（vrange.ValidateExpAgainstRange）：
+// EXP 必须在至少一个内置靶标上 Pass（指纹命中 ∧ 模板执行 ∧ 双判据命中）
+// 才放行。纯 Go（httptest 靶标、回环流量），不加此选项则不跑回归——
+// 存量 EXP 与 command/script 类 EXP 尚无对应靶标，闸门按需启用。
+func WithRangeGate() ExpWriteOption {
+	return func(c *expWriteConfig) { c.rangeGate = true }
+}
+
+func applyExpWriteOptions(opts []ExpWriteOption) *expWriteConfig {
+	c := &expWriteConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
+}
+
+// gateAgainstRange 跑靶场闸门；未放行时返回带原因的错误（写路径就此终止）。
+func gateAgainstRange(e *db.ExpAsset) error {
+	res := vrange.ValidateExpAgainstRange(context.Background(), e)
+	if res.Allowed {
+		return nil
+	}
+	return fmt.Errorf("靶场闸门未放行：%s", res.Reason)
+}
+
+// errPGNotReady 是 PG 句柄未初始化时写路径的可读错误（闸门跑完才发现没库，
+// 不带闸门时语义校验完才发现——都不该以 nil 解引用的形态炸出来）。
+var errPGNotReady = fmt.Errorf("EXP 库写路径需要 PG，当前未初始化")
+
+// CreateExpAsset validates and inserts a new EXP. 可选 WithRangeGate()：
+// 入库前强制过靶场回归（至少一个内置靶标 Pass 才放行）。
+func (l *ExpLibrary) CreateExpAsset(e *db.ExpAsset, opts ...ExpWriteOption) (int64, error) {
 	if err := validateExpAsset(e); err != nil {
 		return 0, err
+	}
+	if applyExpWriteOptions(opts).rangeGate {
+		if err := gateAgainstRange(e); err != nil {
+			return 0, err
+		}
+	}
+	if l.pg == nil {
+		return 0, errPGNotReady
 	}
 	return l.pg.Exps().CreateExpAsset(e)
 }
 
 // UpdateExpAsset validates and saves an edited EXP (optimistic version check
-// when expectVersion > 0).
-func (l *ExpLibrary) UpdateExpAsset(e *db.ExpAsset, expectVersion int) error {
+// when expectVersion > 0). 可选 WithRangeGate()：更新前强制过靶场回归——
+// 迭代后的 EXP 与新入库的 EXP 同一质量标准。
+func (l *ExpLibrary) UpdateExpAsset(e *db.ExpAsset, expectVersion int, opts ...ExpWriteOption) error {
 	if err := validateExpAsset(e); err != nil {
 		return err
+	}
+	if applyExpWriteOptions(opts).rangeGate {
+		if err := gateAgainstRange(e); err != nil {
+			return err
+		}
+	}
+	if l.pg == nil {
+		return errPGNotReady
 	}
 	return l.pg.Exps().UpdateExpAsset(e, expectVersion)
 }
@@ -169,3 +230,9 @@ func (l *ExpLibrary) ListAttempts(expID int64, limit int) ([]*db.ExpAttempt, err
 
 // Stats returns per-EXP hit-rate + failure-reason distribution.
 func (l *ExpLibrary) Stats() ([]*db.ExpStats, error) { return l.pg.Exps().ExpAssetStats() }
+
+// CompoundMetrics returns 复利指标（窗口内经 EXP 库完成的占比、命中率趋势、
+// 失败原因分布——结构化 JSON，供 web 看板）。since 为零值时按 db 层默认窗口。
+func (l *ExpLibrary) CompoundMetrics(since time.Time) (*db.CompoundMetrics, error) {
+	return l.pg.Exps().CompoundMetrics(since)
+}
