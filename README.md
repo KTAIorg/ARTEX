@@ -573,6 +573,101 @@ flowchart TB
 
 ---
 
+## CVE 情报富化工具（vuln_enrich_cve）
+
+> 本节即《CVE富化工具》文档（受 hook 约束以 README 章节形式存放）。实现见 `server/vuln_enrich.go`，缓存在 `db/cve_enrich.go` + `db/schema.sql`（表 `cve_enrich_cache`），测试 `server/vuln_enrich_test.go` / `db/cve_enrich_test.go`。
+
+子 agent 拿到一个 CVE 编号、要判断「这个 CVE 值不值得打」时，一次调用聚合多源情报，输出标准化画像与 P0-P4 优先级结论。定位是修成功率先验公式里的 **P(指纹正确) × P(前置满足)**：`affected` 给指纹核对依据（组件+版本区间），`preconditions` 给前置满足概率依据（是否需认证 / 网络位置 / 用户交互）。与既有三个 kt-vuln 只读工具同模式注入（`platformTools()` + tools 表绑定，默认绑 `auto` + `worker`）。典型链路：先 `vuln_enrich_cve` 拿打分依据，再用 `vuln_search_assets` 的 `cve` 参数找受影响资产。
+
+### 数据源优先级
+
+按优先级从高到低逐级降级，任何单源失败/超时只降级、不阻塞整体；三大主源全部拿不到数据时返回结构化错误（逐源列出状态与原因），不 panic。工具层总预算 90s。
+
+| 优先级 | 源 | 端点 | 超时 | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | kt-vuln | `/api/cves`（关注清单）+ `/api/cve-catalog`（全量字典） | 45s | 复用 `vulnGet` 服务账号通道（Bearer + 401 重登）。关注清单带人工运营的 affected/kev；字典兜底存在性与元数据。服务账号 env（`VULN_SVC_USERNAME/PASSWORD`）未配时该源记 `skipped` 跳过 |
+| 2 | NVD | `GET services.nvd.nist.gov/rest/json/cves/2.0?cveId=...` | 20s | 无需 key；匿名限流 5req/30s，靠缓存兜底。提供 CVSS 向量、CPE 区间、Exploit 标签引用、`cisaExploitAdd`（KEV） |
+| 3 | GitHub Advisory | `GET api.github.com/advisories?cve_id=...` | 10s | 无需 key。提供生态包版本区间（Maven/PIP 等）、CVSS、PoC 引用 |
+| 补充 | EPSS | `GET api.first.org/data/v1/epss?cve=...` | 5s | 尽力而为，取不到输出 `null`。三大主源均无数据时 EPSS 不算数 |
+
+合并口径：severity 有向量的优先（NVD > GitHub > kt-vuln 仅分数兜底）；kev 任一源判 true 即 true，kt-vuln/NVD 任一可达即视为可判定（false 有效），只有 KEV 能力源全挂才 `unknown`；affected kt-vuln 人工运营在前（> NVD CPE > GitHub 生态区间，截前 10 条）；PoC 引用去重合并（NVD `Exploit` 标签最可信）。
+
+三个外部源 URL 均可 env 覆盖（同时也是测试注入 mock 的挂点，测试不依赖真实外网）：`VULN_ENRICH_NVD_URL` / `VULN_ENRICH_GHSA_URL` / `VULN_ENRICH_EPSS_URL`。
+
+### 缓存策略
+
+富化结果按 CVE 编号落 PostgreSQL 表 `cve_enrich_cache`（schema.sql 幂等迁移）：
+
+```sql
+CREATE TABLE IF NOT EXISTS cve_enrich_cache (
+    cve_id     TEXT PRIMARY KEY,
+    payload    JSONB NOT NULL,          -- 工具输出完整 JSON（不含 cache 元信息）
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+```
+
+- TTL 默认 24h，`VULN_ENRICH_CACHE_TTL_HOURS` 可调（1-720，非法回落默认）。
+- 命中条件 `expires_at > now()`；过期行在读取路径懒删除（主键 DELETE 无命中代价极低），无需后台清理任务。
+- 重复查询直接回缓存并在输出里带 `"cache":{"hit":true,"fetched_at":...,"expires_at":...}`；`refresh=true` 跳过缓存强制重取并覆盖。
+- 缓存读写失败不阻塞富化（记入 `sources` 报告），Server 未接 Manager 时照常工作、只是不缓存。
+
+### verdict 打分规则
+
+确定性规则，先命中先停（测试锁定）：
+
+| 优先级 | 条件 |
+| --- | --- |
+| P0 | 在 CISA KEV 在野利用清单 |
+| P1 | CVSS ≥ 9，或 CVSS ≥ 7 且有公开 PoC |
+| P2 | CVSS ≥ 7，或有公开 PoC，或 EPSS ≥ 0.5 |
+| P3 | CVSS ≥ 4 |
+| P4 | 其余（低危或情报不足） |
+
+`reason` 一句话列出命中的关键事实（KEV / CVSS 分数与等级 / PoC 条数 / EPSS），无任何数据时明说「情报不足」。`preconditions` 解析顺序：CVSS 向量（AV→network、PR→auth、UI→user_interaction；PR 是「所需权限」，作为「是否需认证」的结构化近似）优先，无向量回落描述关键词（unauthenticated/需登录/远程/本地等中英文模式），都解析不出给 `unknown`。`suggested_verify` 推 `atomic_verify_poc` 草案：有可信 PoC 且非纯本地利用给 `run_poc` 模板（含待填的 target/expect），否则有影响区间给 `version_check`（指纹版本核对），都推不出为 `null`。
+
+### 输出契约示例
+
+`vuln_enrich_cve(cve_id="CVE-2021-44228")` 输出（mock 数据源下的测试断言同构）：
+
+```json
+{
+  "cve_id": "CVE-2021-44228",
+  "title": "Log4Shell JNDI RCE",
+  "summary": "Apache Log4j2 up to 2.14.1 JNDI features allow remote attackers to execute arbitrary code...",
+  "affected": [
+    {"source": "kt-vuln", "product": "log4j-core", "version_range": "2.0-beta9 - 2.14.1"},
+    {"source": "nvd", "product": "apache:log4j", "version_range": ">= 2.0-beta9, < 2.15.0",
+     "cpe": "cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*"},
+    {"source": "github-advisory", "product": "Maven/org.apache.logging.log4j:log4j-core",
+     "version_range": "= 2.0"}
+  ],
+  "severity": {"score": 10, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+               "level": "critical", "source": "nvd"},
+  "kev": true,
+  "epss": 0.97702,
+  "poc": {"count": 1, "best": "https://github.com/kozbin/log4shell-PoC",
+          "sources": ["https://github.com/kozbin/log4shell-PoC"]},
+  "preconditions": {"auth": "none", "network": "remote", "user_interaction": "none",
+                    "evidence": "CVSS 向量 CVSS:3.1/AV:N/...（PR 近似认证要求）"},
+  "suggested_verify": {"tool": "atomic_verify_poc", "mode": "run_poc",
+    "draft": {"poc_url": "https://github.com/kozbin/log4shell-PoC", "target": "<待填:目标资产地址>",
+              "auth": "none", "expect": "<待填:PoC 成功特征(版本回显/回连/敏感数据回显)>"}},
+  "verdict": {"priority": "P0", "reason": "在 CISA KEV 在野利用清单；CVSS 10.0(critical)；公开 PoC 1 条"},
+  "sources": [
+    {"name": "kt-vuln", "status": "hit", "note": "关注清单+全量字典"},
+    {"name": "nvd", "status": "hit"},
+    {"name": "github-advisory", "status": "hit"},
+    {"name": "epss", "status": "hit"}
+  ],
+  "cache": {"hit": false, "fetched_at": "2026-11-04T01:00:00+08:00", "expires_at": "2026-11-05T01:00:00+08:00"}
+}
+```
+
+字段口径：`kev` 为 `true | false | "unknown"`；`epss` 为 0-1 分数或 `null`；`sources[].status` ∈ `hit | miss | error | skipped`。全源无数据时返回结构化错误文本：`CVE 富化失败: <编号>，所有数据源均未取得数据[kt-vuln=skipped(...); nvd=error(...); github-advisory=miss(...)]...`。
+
+---
+
 ## 交流群
 
 扫码关注微信公众号 **SecSentry**，在公众号后台私信即可入群交流。

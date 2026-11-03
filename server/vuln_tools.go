@@ -3,6 +3,8 @@ package server
 // KT 漏洞情报平台（kt-vuln）只读查询工具：vuln_list_cves / vuln_search_assets /
 // vuln_cve_detail。给对话 agent（auto）与任务 agent（worker）用，host 工具经
 // platformTools() 注入、tools 表按 agent 绑定过滤（seed 默认绑 auto+worker）。
+// 第四个工具 vuln_enrich_cve（多源 CVE 情报富化 + 缓存）在 vuln_enrich.go，同一
+// vulnToolKeys 集合统一绑 auto+worker。
 //
 // 数据语义（与 kt-vuln handler 对齐，不要混用）：
 //   - /api/cves        关注清单：约 36 条精选 CVE（curated + 有判定事实），
@@ -69,6 +71,7 @@ var vulnToolKeys = map[string]bool{
 	"vuln_list_cves":     true,
 	"vuln_search_assets": true,
 	"vuln_cve_detail":    true,
+	"vuln_enrich_cve":    true,
 }
 
 // vulnCreds 读取只读服务账号 env（成对才算配齐）。
