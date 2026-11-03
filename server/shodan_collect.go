@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/server/sigauth"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -35,6 +36,26 @@ const (
 
 func collectorConfigured() bool {
 	return strings.TrimSpace(os.Getenv(envCollectorURL)) != ""
+}
+
+// collectorAuthHeader 取调用采集器的 Authorization 值：优先 Ed25519 短时令牌
+// （SIGAUTH_PRIVATE_KEY，私钥只在本机），回落共享 COLLECTOR_TOKEN（迁移期）。
+func collectorAuthHeader() (string, error) {
+	if kv := strings.TrimSpace(os.Getenv("SIGAUTH_PRIVATE_KEY")); kv != "" {
+		signer, err := sigauth.ParsePriv(kv)
+		if err != nil {
+			return "", fmt.Errorf("SIGAUTH_PRIVATE_KEY 解析失败: %w", err)
+		}
+		tok, err := signer.Token()
+		if err != nil {
+			return "", err
+		}
+		return "Bearer " + tok, nil
+	}
+	if tok := strings.TrimSpace(os.Getenv(envCollectorToken)); tok != "" {
+		return "Bearer " + tok, nil
+	}
+	return "", nil
 }
 
 func collectorConfiguredError() error {
@@ -63,8 +84,10 @@ func collectorEnqueue(ctx context.Context, query string, maxPages int, reason, c
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", collectorUserAgent)
-	if tok := strings.TrimSpace(os.Getenv(envCollectorToken)); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if auth, err := collectorAuthHeader(); err != nil {
+		return 0, err
+	} else if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	client := &http.Client{Timeout: collectorTimeout}
 	resp, err := client.Do(req)
@@ -97,8 +120,10 @@ func collectorStats(ctx context.Context) (map[string]int64, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", collectorUserAgent)
-	if tok := strings.TrimSpace(os.Getenv(envCollectorToken)); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	if auth, err := collectorAuthHeader(); err != nil {
+		return nil, err
+	} else if auth != "" {
+		req.Header.Set("Authorization", auth)
 	}
 	resp, err := (&http.Client{Timeout: collectorTimeout}).Do(req)
 	if err != nil {
