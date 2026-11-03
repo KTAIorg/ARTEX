@@ -1643,4 +1643,16 @@ CREATE TABLE IF NOT EXISTS task_vuln_worksets (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(task_id, vuln_asset_id)
 );
+
+-- CVE 情报富化缓存（vuln_enrich_cve 工具）：聚合 kt-vuln/NVD/GitHub Advisory/EPSS 的
+-- 标准化结果按 CVE 编号落一份快照，TTL 内重复查询直接回缓存，避免反复打外部
+-- 限流接口（NVD 匿名 5req/30s）。payload 为工具输出的完整 JSON；expires_at 过期后
+-- 读取路径懒删除（GetCVEEnrichCache），无需后台清理任务。
+CREATE TABLE IF NOT EXISTS cve_enrich_cache (
+    cve_id     TEXT PRIMARY KEY,
+    payload    JSONB NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cve_enrich_cache_expiry ON cve_enrich_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_task_vuln_worksets_task ON task_vuln_worksets(task_id, id);
