@@ -1,4 +1,5 @@
 import {
+  Users,
   Activity,
   Ban,
   BellRing,
@@ -92,6 +93,7 @@ export const sidebarItems: NavGroup[] = [
     // 管理面整组仅 admin 可见；对应后端 requireRole("admin")，隐藏不替代 403。
     roles: ["admin"],
     items: [
+      { id: "members", title: "成员与角色", url: "/system/members", icon: Users },
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },

@@ -1004,6 +1004,9 @@ func (s *Server) Handler() http.Handler {
 	// kt-vuln 用户令牌透传代理：/api/vuln/* → {VULN_PROXY_TARGET}/api/*（vulnproxy.go）。
 	// 挂在 /api/ 下天然过 requireAuth；用户 identity 令牌从 X-Identity-Token 取。
 	mux.HandleFunc("/api/vuln/", s.vulnProxy)
+	// identity 成员管理透传（workspace=artex 委派）：/api/admin/members*（membersproxy.go）。
+	mux.HandleFunc("/api/admin/members", admin(s.membersProxy))
+	mux.HandleFunc("/api/admin/members/", admin(s.membersProxy))
 	// Skill CRUD (文件系统)
 	mux.HandleFunc("GET /api/skills", s.fsListSkills)
 	mux.HandleFunc("POST /api/skills", admin(s.fsCreateSkill))
