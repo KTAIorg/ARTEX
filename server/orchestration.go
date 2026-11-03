@@ -529,11 +529,12 @@ func (s *Server) seedOrchestrationTools() {
 	}
 	// vuln 情报工具例外：对话 agent(auto) 与任务 agent(worker) 都要能实时查
 	// kt-vuln（issue kt-vuln #58 需求 B），seed 默认绑两者。
+	// EXP 资产库工具同理：auto+worker（猎杀 agent 查命中 EXP）。
 	vulnAgents, _ := json.Marshal([]string{"auto", "worker"})
 	for _, t := range s.platformTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		agents := autoAgents
-		if vulnToolKeys[t.Name()] {
+		if vulnToolKeys[t.Name()] || expToolKeys[t.Name()] {
 			agents = vulnAgents
 		}
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, agents)
@@ -565,6 +566,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedFindingWorkflowTools()
 	s.seedFindingCaseTools()
 	s.seedAtomicTools() // 原子操作层:seed 进 tools 表,默认绑 worker+pentest(首插入生效)
+	s.seedExpWorkerBinding() // EXP 资产库工具补绑 worker(一次性，flag 守卫)
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
