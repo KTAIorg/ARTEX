@@ -44,6 +44,8 @@ interface NavItemBase {
   badge?: NavBadge;
   disabled?: boolean;
   newTab?: boolean;
+  // 可见角色（admin/operator/viewer）；缺省 = 全员可见。命中任一角色即显示。
+  roles?: string[];
 }
 
 export interface NavMainLinkItem extends NavItemBase {
@@ -61,6 +63,8 @@ export interface NavGroup {
   id: number;
   label?: string;
   items: NavMainItem[];
+  // 组级可见角色：不命中则整组隐藏；组内 item 可再用 roles 单独收窄。
+  roles?: string[];
 }
 
 export const sidebarItems: NavGroup[] = [
@@ -85,6 +89,8 @@ export const sidebarItems: NavGroup[] = [
   {
     id: 2,
     label: "系统",
+    // 管理面整组仅 admin 可见；对应后端 requireRole("admin")，隐藏不替代 403。
+    roles: ["admin"],
     items: [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
@@ -97,6 +103,15 @@ export const sidebarItems: NavGroup[] = [
       { id: "approvals", title: "审批记录", url: "/system/intercept/approvals", icon: ClipboardList },
       { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
       { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
+    ],
+  },
+  {
+    id: 3,
+    label: "Vuln情报站",
+    // kt-vuln（vuln.ktyun.cc）资产/CVE 情报唯一事实源；普通用户可见（权限由 identity 令牌在 vuln 侧判定）。
+    items: [
+      { id: "vuln-cves", title: "CVE列表", url: "/vuln/cves", icon: Bug },
+      { id: "vuln-assets", title: "情报", url: "/vuln/assets", icon: ShieldAlert },
     ],
   },
 ];

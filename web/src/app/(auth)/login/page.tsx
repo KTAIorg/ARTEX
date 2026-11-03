@@ -4,15 +4,34 @@ import { useEffect, useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
+import { KtIamClient, resolveTelegramOpaqueCode, type TelegramChallenge } from "@ktaiorg/iam-react";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
+import QRCode from "qrcode";
 
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
+
+// KT Identity Telegram 扫码登录（换发模式）：challenge 的生命周期由 phase 驱动，
+// starting → ready →（confirmed 后）exchanging；expired / error 为终态，靠按钮重开。
+type IdentityPhase = "starting" | "ready" | "exchanging" | "expired" | "error";
+
+const IDENTITY_START_RETRIES = 3; // telegramStart 失败自动重试次数上限
+const IDENTITY_RETRY_DELAY_MS = 800;
+const IDENTITY_POLL_INTERVAL_MS = 2500;
+const IDENTITY_EXCHANGE_TIMEOUT_MS = 45_000; // exchanging 看门狗：超时落错误态，避免无限转圈
+
+function formatCountdown(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -24,6 +43,20 @@ export default function LoginPage() {
   const [termsOpen, setTermsOpen] = useState(false);
   const [readToEnd, setReadToEnd] = useState(false);
   const termsBodyRef = useRef<HTMLDivElement>(null);
+
+  // ---- KT Identity Telegram 扫码登录 ----
+  const [identityPhase, setIdentityPhase] = useState<IdentityPhase>("starting");
+  const [identityError, setIdentityError] = useState("");
+  const [identityChallenge, setIdentityChallenge] = useState<TelegramChallenge | null>(null);
+  const [identityQr, setIdentityQr] = useState("");
+  const [identitySecondsLeft, setIdentitySecondsLeft] = useState(0);
+  // 重试/刷新按钮通过递增 nonce 重走整套 start 流程（全部状态与定时器随之重置）。
+  const [identityNonce, setIdentityNonce] = useState(0);
+  const iamRef = useRef<KtIamClient | null>(null);
+
+  function retryIdentityLogin() {
+    setIdentityNonce((n) => n + 1);
+  }
 
   // 滚动到条款底部（含无需滚动即可完整展示的情况）方可点击「同意」。
   function handleTermsScroll() {
@@ -69,7 +102,12 @@ export default function LoginPage() {
     setError("");
     try {
       const { token } = await api.login("ARTEX", password);
+      // 账密登录 = 内网单管理员，与后端给该路径签发的 JWT roles 对齐。
+      // 该路径没有 identity 令牌：清掉上一次 identity 登录可能残留的旧 token，
+      // 避免 /api/vuln 代理继续透传已换人的用户令牌（审计归因错人）。
+      auth.clearIdentityToken();
       auth.setToken(token);
+      auth.setRoles(["admin"]);
       window.location.replace("/function/tasks");
     } catch {
       setError("用户名或密码错误");
@@ -77,6 +115,124 @@ export default function LoginPage() {
       setLoading(false);
     }
   }
+
+  // mount（及 nonce 变化）后自动发起 Telegram challenge；失败自动重试，超限进入
+  // error 终态给重试按钮。cancelled 标记保证 StrictMode 双挂载/卸载后不再落状态。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: identityNonce is the explicit restart trigger for the whole start flow.
+  useEffect(() => {
+    iamRef.current ??= new KtIamClient({ identityBaseUrl: "", storageKey: "kt.artex.session" });
+    const client = iamRef.current;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    setIdentityPhase("starting");
+    setIdentityChallenge(null);
+    setIdentityQr("");
+    setIdentityError("");
+    setIdentitySecondsLeft(0);
+
+    async function start(retriesLeft: number) {
+      try {
+        const challenge = await client.telegramStart();
+        const qr = await QRCode.toDataURL(challenge.telegram.qrUrl);
+        if (cancelled) return;
+        const expiresAt = new Date(challenge.expiresAt).getTime();
+        setIdentityChallenge(challenge);
+        setIdentityQr(qr);
+        setIdentitySecondsLeft(
+          Number.isFinite(expiresAt) ? Math.max(0, Math.floor((expiresAt - Date.now()) / 1000)) : 300,
+        );
+        setIdentityPhase("ready");
+      } catch {
+        if (cancelled) return;
+        if (retriesLeft > 0) {
+          retryTimer = setTimeout(() => start(retriesLeft - 1), IDENTITY_RETRY_DELAY_MS);
+          return;
+        }
+        setIdentityError("无法连接 KT Identity 服务，请稍后重试");
+        setIdentityPhase("error");
+      }
+    }
+
+    void start(IDENTITY_START_RETRIES);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [identityNonce]);
+
+  // ready 期间每 2.5s 轮询一次；confirmed 拿 identity token 换 ARTEX JWT，
+  // 成功后完全复用账密登录的成功路径（auth.setToken + 跳转 /function/tasks）。
+  useEffect(() => {
+    if (identityPhase !== "ready" || !identityChallenge) return;
+    const client = iamRef.current;
+    if (!client) return;
+    let cancelled = false;
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
+      void (async () => {
+        try {
+          const res = await client.telegramPoll(
+            identityChallenge.challengeId,
+            resolveTelegramOpaqueCode(identityChallenge),
+          );
+          if (cancelled || res.status !== "confirmed" || !res.session?.token) return;
+          setIdentityPhase("exchanging");
+          try {
+            const { token, roles } = await api.identityExchange(res.session.token);
+            // setPhase("exchanging") 已触发本 effect cleanup（cancelled=true），
+            // 但写 token/roles 与跳转不是 setState，必须无条件执行——guard 会把成功
+            // 结果丢弃，页面将永远停在“正在登录…”。identity opaque token 同理：
+            // 不再用完即丢，P1 起留存（artex.identity_token），供 /api/vuln/* 用户
+            // 令牌透传代理，登出时随 clearToken 一并清除。
+            auth.setToken(token);
+            auth.setRoles(roles);
+            auth.setIdentityToken(res.session.token);
+            window.location.replace("/function/tasks");
+          } catch (err) {
+            // 失败路径与上面的成功路径对称：此时 cancelled 必为 true，若被 guard
+            // 吞掉，报错永远不落 UI，页面会无限停在「正在登录…」。cleanup 只结束
+            // effect 本身，组件仍在页上，setState 是安全的。
+            setIdentityError(err instanceof Error && err.message ? `登录失败：${err.message}` : "登录失败，请重试");
+            setIdentityPhase("error");
+          }
+        } catch {
+          // 轮询瞬断（SDK 已把非 2xx 归一成 pending，这里只剩网络级异常）忽略，等下一轮。
+        } finally {
+          inFlight = false;
+        }
+      })();
+    }, IDENTITY_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [identityPhase, identityChallenge]);
+
+  // 倒计时每秒递减；归零置 expired（上面轮询 effect 依赖 phase，会随之停掉）。
+  useEffect(() => {
+    if (identityPhase !== "ready") return;
+    const timer = setInterval(() => setIdentitySecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [identityPhase]);
+
+  // exchanging 看门狗：换发卡死（identity 冷连接 TTFB 可达 16s+，客户端超时又可能
+  // 被网络层吞掉）时兜底落错误态给重试按钮，避免页面无限停在「正在登录…」；
+  // phase 变化（报错/重开流程/跳转卸载）即清理定时器。
+  useEffect(() => {
+    if (identityPhase !== "exchanging") return;
+    const timer = setTimeout(() => {
+      setIdentityError("登录超时：身份服务响应缓慢，请重试");
+      setIdentityPhase("error");
+    }, IDENTITY_EXCHANGE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [identityPhase]);
+
+  useEffect(() => {
+    if (identityPhase === "ready" && identitySecondsLeft === 0) setIdentityPhase("expired");
+  }, [identityPhase, identitySecondsLeft]);
 
   if (checking) {
     return (
@@ -100,52 +256,141 @@ export default function LoginPage() {
       </div>
 
       {/* Right panel */}
-      <div className="flex w-full items-center justify-center bg-background p-8 lg:w-2/3">
-        <div className="w-full max-w-md space-y-10 py-24 lg:py-32">
+      <div className="flex w-full items-center justify-center overflow-y-auto bg-background p-8 lg:w-2/3">
+        <div className="my-auto w-full max-w-md space-y-8 py-10 lg:py-16">
           <div className="space-y-4 text-center">
             <h2 className="text-2xl font-medium tracking-tight">登录</h2>
-            <p className="mx-auto max-w-xl text-muted-foreground">欢迎回来，请输入密码以继续使用 ARTEX</p>
+            <p className="mx-auto max-w-xl text-muted-foreground">欢迎回来，可选择密码登录或 KT Identity 登录</p>
           </div>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="username">用户名</Label>
-              <Input id="username" value="ARTEX" readOnly className="bg-muted text-muted-foreground" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="请输入密码"
-                autoFocus
-                autoComplete="current-password"
-              />
-            </div>
-            <div className="flex items-start gap-2">
-              <Checkbox
-                id="agree-terms"
-                checked={agreed}
-                onCheckedChange={(v) => setAgreed(v === true)}
-                className="mt-0.5"
-              />
-              <Label htmlFor="agree-terms" className="text-sm font-normal leading-relaxed text-muted-foreground">
-                我已阅读并同意
-                <button
-                  type="button"
-                  onClick={() => setTermsOpen(true)}
-                  className="mx-0.5 font-medium text-primary underline-offset-4 hover:underline"
-                >
-                  《使用须知》
-                </button>
-              </Label>
-            </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading || !password || !agreed}>
-              {loading ? "登录中..." : "登录"}
-            </Button>
-          </form>
+          <Card>
+            <CardHeader>
+              <CardTitle>密码登录</CardTitle>
+              <CardDescription>使用 ARTEX 内置账号密码继续</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="username">用户名</Label>
+                  <Input id="username" value="ARTEX" readOnly className="bg-muted text-muted-foreground" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="password">密码</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="请输入密码"
+                    autoFocus
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id="agree-terms"
+                    checked={agreed}
+                    onCheckedChange={(v) => setAgreed(v === true)}
+                    className="mt-0.5"
+                  />
+                  <Label htmlFor="agree-terms" className="text-sm font-normal leading-relaxed text-muted-foreground">
+                    我已阅读并同意
+                    <button
+                      type="button"
+                      onClick={() => setTermsOpen(true)}
+                      className="mx-0.5 font-medium text-primary underline-offset-4 hover:underline"
+                    >
+                      《使用须知》
+                    </button>
+                  </Label>
+                </div>
+                {error && <p className="text-sm text-destructive">{error}</p>}
+                <Button type="submit" className="w-full" disabled={loading || !password || !agreed}>
+                  {loading ? "登录中..." : "登录"}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>KT Identity 登录</CardTitle>
+              <CardDescription>使用 KT 账号 Telegram 扫码确认后自动登录</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              {identityPhase === "starting" && (
+                <div className="flex h-52 items-center justify-center gap-2 text-muted-foreground">
+                  <Spinner className="size-4" />
+                  正在创建登录请求…
+                </div>
+              )}
+
+              {identityPhase === "error" && (
+                <div className="flex h-52 flex-col items-center justify-center gap-3 text-center">
+                  <p className="text-sm text-destructive">{identityError}</p>
+                  <Button type="button" variant="outline" size="sm" onClick={retryIdentityLogin}>
+                    重试
+                  </Button>
+                </div>
+              )}
+
+              {identityChallenge &&
+                (identityPhase === "ready" || identityPhase === "exchanging" || identityPhase === "expired") && (
+                  <>
+                    <div className="relative mx-auto">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={identityQr}
+                        alt="Telegram 登录二维码"
+                        width={192}
+                        height={192}
+                        className="size-48 rounded-lg border bg-white p-2"
+                      />
+                      {(identityPhase === "exchanging" || identityPhase === "expired") && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-lg bg-background/85 backdrop-blur-[2px]">
+                          {identityPhase === "exchanging" ? (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Spinner className="size-4" />
+                              正在登录…
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-sm font-medium">二维码已过期</p>
+                              <Button type="button" variant="outline" size="sm" onClick={retryIdentityLogin}>
+                                刷新二维码
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1.5 text-center">
+                      <p className="font-mono text-2xl font-semibold tracking-[0.3em]">
+                        {identityChallenge.displayCode}
+                      </p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        Telegram 扫码或点击本机打开，核对校验码后确认登录
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={identityPhase !== "ready"}
+                        onClick={() => window.open(identityChallenge.telegram.qrUrl, "_blank")}
+                      >
+                        本机打开
+                      </Button>
+                      <span className="font-mono text-sm text-muted-foreground" aria-live="polite">
+                        {formatCountdown(identitySecondsLeft)}
+                      </span>
+                    </div>
+                  </>
+                )}
+            </CardContent>
+          </Card>
         </div>
       </div>
 

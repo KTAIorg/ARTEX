@@ -6,8 +6,6 @@ import { useSearchParams } from "next/navigation";
 
 import {
   BuildingIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   GlobeIcon,
   KeyRoundIcon,
   LayoutTemplateIcon,
@@ -20,6 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { AssetCard, Chips } from "@/components/asset-card";
 import { AssetDslSearch } from "@/components/asset-dsl-search";
 import { IntelligencePanel } from "@/components/intelligence-panel";
 import { ScopeTextEditor } from "@/components/scope-text-editor";
@@ -49,7 +48,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Sheet,
   SheetContent,
@@ -98,8 +96,7 @@ function statusTone(code: number) {
   return "text-muted-foreground";
 }
 
-const PAGE_SIZES = [25, 50, 100, 200];
-
+// 本地资产 tab（v0.4.0 起 kt-vuln 漏洞库/CVE 情报拆到独立「Vuln情报站」菜单，见 /vuln/*）。
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   { key: "company", label: "企业", icon: BuildingIcon },
   { key: "root_domain", label: "根域名", icon: GlobeIcon },
@@ -877,137 +874,6 @@ function AssetsContent() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
-  );
-}
-
-function AssetCard({
-  cols,
-  loaded,
-  total,
-  page,
-  size,
-  onSize,
-  onPage,
-  rows: dataRows,
-  selected,
-  onToggleAll,
-  children,
-}: {
-  cols: string[];
-  loaded: boolean;
-  total: number;
-  page: number;
-  size: number;
-  onSize: React.Dispatch<React.SetStateAction<number>>;
-  onPage: React.Dispatch<React.SetStateAction<number>>;
-  rows?: Asset[];
-  selected?: Set<number>;
-  onToggleAll?: (ids: number[]) => void;
-  children: React.ReactNode;
-}) {
-  const childRows = React.Children.toArray(children);
-  const pageCount = Math.max(1, Math.ceil(total / size));
-  const start = total === 0 ? 0 : page * size + 1;
-  const end = page * size + childRows.length;
-
-  const pageIds = dataRows?.map((r) => r.id) ?? [];
-  const allSelected = pageIds.length > 0 && selected != null && pageIds.every((id) => selected.has(id));
-  const someSelected = selected != null && pageIds.some((id) => selected.has(id));
-
-  return (
-    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
-      <div className="min-h-0 flex-1 overflow-auto scrollbar-thin scrollbar-track-transparent">
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-card">
-            <TableRow>
-              {cols.map((c, i) =>
-                c === "" && i === 0 && onToggleAll ? (
-                  <TableHead key={i} className="w-8 pr-0">
-                    <Checkbox
-                      checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                      onCheckedChange={() => onToggleAll(pageIds)}
-                    />
-                  </TableHead>
-                ) : (
-                  <TableHead key={c + i}>{c}</TableHead>
-                ),
-              )}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {childRows.length > 0 ? (
-              childRows
-            ) : (
-              <TableRow>
-                <TableCell colSpan={cols.length} className="py-12 text-center text-sm text-muted-foreground">
-                  {loaded ? "暂无数据。" : "加载中…"}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
-      {total > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
-          <Select value={String(size)} onValueChange={(v) => onSize(Number(v))}>
-            <SelectTrigger size="sm" className="h-7 w-24">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {PAGE_SIZES.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n} / 页
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <span className="tabular-nums">
-            {start}–{end} / {total}
-          </span>
-          {pageCount > 1 && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                disabled={page <= 0}
-                onClick={() => onPage((p) => Math.max(0, p - 1))}
-              >
-                <ChevronLeftIcon />
-              </Button>
-              <span className="tabular-nums">
-                {page + 1} / {pageCount}
-              </span>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                disabled={page + 1 >= pageCount}
-                onClick={() => onPage((p) => Math.min(pageCount - 1, p + 1))}
-              >
-                <ChevronRightIcon />
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
-  const clean = items.filter(Boolean);
-  if (clean.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {clean.map((s, i) => (
-        <Badge key={i} variant="outline" className={cn("text-[10px]", mono && "font-mono")}>
-          {s}
-        </Badge>
-      ))}
     </div>
   );
 }

@@ -1633,3 +1633,14 @@ CREATE INDEX IF NOT EXISTS idx_task_intelligence_assets ON task_intelligence USI
 
 -- Optional derived credential presentation; raw intelligence remains authoritative.
 ALTER TABLE task_intelligence ADD COLUMN IF NOT EXISTS credential_analysis JSONB;
+
+-- P3: 任务 Vuln 资产工作集（下发任务时的资产快照；快照仅凭证，事实源在 vuln.ktyun.cc，回查以 vuln 为准）
+CREATE TABLE IF NOT EXISTS task_vuln_worksets (
+    id            BIGSERIAL PRIMARY KEY,
+    task_id       BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    vuln_asset_id BIGINT NOT NULL,
+    snapshot      JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(task_id, vuln_asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_vuln_worksets_task ON task_vuln_worksets(task_id, id);

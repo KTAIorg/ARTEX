@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 
 import {
   DndContext,
@@ -185,6 +186,7 @@ import {
   parseWorkerCountInput,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { clearVulnWorksetDraft, readVulnWorksetDraft, vuln } from "@/lib/vuln";
 
 // fmtBytes renders a human file size for the upload manifest.
 function fmtBytes(n: number): string {
@@ -418,6 +420,26 @@ function compareTasks(
 }
 
 export default function TasksPage() {
+  // useSearchParams（预填跳转）需要 Suspense 边界，静态导出构建才不报错。
+  return (
+    <React.Suspense fallback={null}>
+      <TasksPageContent />
+    </React.Suspense>
+  );
+}
+
+function TasksPageContent() {
+  const searchParams = useSearchParams();
+  // 外部预填（资产页漏洞库/CVE「下发任务」跳转）：?new_task=1&name=&description=&goal=
+  const createPrefill = React.useMemo(() => {
+    if (searchParams.get("new_task") !== "1") return null;
+    const name = searchParams.get("name") ?? "";
+    const description = searchParams.get("description") ?? "";
+    const goal = searchParams.get("goal") ?? "";
+    if (!name && !description && !goal) return null;
+    return { name, description, goal, vulnWs: searchParams.get("vuln_ws") === "1" };
+  }, [searchParams]);
+
   const [activeTab, setActiveTab] = React.useState("current");
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
@@ -1156,6 +1178,7 @@ export default function TasksPage() {
               <CreateTaskSheet
                 tasks={tasks}
                 categories={categories}
+                prefill={createPrefill}
                 onCreated={refreshCategoriesAndTasks}
                 onCategoriesChanged={refreshCategoriesAndTasks}
               />
@@ -3849,11 +3872,13 @@ function CategoryManagementSheet({
 function CreateTaskSheet({
   tasks,
   categories,
+  prefill,
   onCreated,
   onCategoriesChanged,
 }: {
   tasks: Task[];
   categories: TaskCategory[];
+  prefill?: { name: string; description: string; goal: string; vulnWs?: boolean } | null;
   onCreated: () => void;
   onCategoriesChanged: () => void;
 }) {
@@ -3913,6 +3938,20 @@ function CreateTaskSheet({
       .catch(() => setCompanies([]));
   }, []);
 
+  // 外部预填（漏洞库/CVE「下发任务」跳转进来）：一次性填入并自动打开抽屉。
+  // 只认一次：之后用户手改表单不受影响，也不会因父组件重渲染被覆盖。
+  const prefillAppliedRef = React.useRef(false);
+  // vuln 资产快照只挂载一次：URL 参数未清时第二次创建不得误用残留 draft。
+  const vulnWsHandledRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!prefill || prefillAppliedRef.current) return;
+    prefillAppliedRef.current = true;
+    if (prefill.name) setName(prefill.name);
+    if (prefill.description) setDescription(prefill.description);
+    if (prefill.goal) setGoal(prefill.goal);
+    setOpen(true);
+  }, [prefill]);
+
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
   // absolute paths to the description; the task's agents open them by path via Read/Bash.
   async function pickFiles(files: FileList | null) {
@@ -3959,7 +3998,7 @@ function CreateTaskSheet({
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
       const heartbeatSec =
         Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
-      await api.createTask({
+      const task = await api.createTask({
         name: name.trim(),
         remark: remark.trim(),
         categoryId: categoryID,
@@ -3979,6 +4018,20 @@ function CreateTaskSheet({
           .filter((r) => r.pattern !== ""),
       });
       toast.success("任务已创建");
+      // 漏洞库/CVE「下发任务」带入的资产快照：任务建好后挂到新任务上；失败不阻塞任务创建结果。
+      if (prefill?.vulnWs && !vulnWsHandledRef.current) {
+        vulnWsHandledRef.current = true;
+        const items = readVulnWorksetDraft();
+        if (items.length > 0) {
+          try {
+            await vuln.pinTaskWorkset(task.id, items);
+            clearVulnWorksetDraft();
+          } catch (e) {
+            console.warn("vuln workset pin failed", e);
+            toast.warning(`Vuln 工作集写入失败：${(e as Error).message}（任务已创建，可稍后手动补挂）`);
+          }
+        }
+      }
       setName("");
       setRemark("");
       setCategoryID(undefined);
