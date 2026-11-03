@@ -1,6 +1,9 @@
 #!/bin/sh
 # ARTEX CI 发布脚本（ci.ktyun.cc docker runner）。
-# 产物：oci.ktyun.cc/ktaiorg/artex:prod-sha-<short>（amd64，webui embed）
+# 产物：oci.ktyun.cc/ktaiorg/artex:{prod,test}-sha-<short>（amd64，webui embed）
+#   - push 到 main   → prod-sha-<short>（生产通道，现状不变）
+#   - push 到 test   → test-sha-<short>（灰度/canary 通道，供 beta 实例先体验）
+# 两个通道同一套构建逻辑，只有 tag 前缀不同；调度仓 dispatch.yml 控制 ref 放行。
 # 注意：runner 的 daemon 看不见作业目录；容器构建一律 tar 进 tar 出。docker build 的
 # context 由 docker CLI 客户端侧打包上传，不受影响。
 set -eu
@@ -11,7 +14,12 @@ fail() { echo "!!! $*" >&2; exit 1; }
 sha="${SOURCE_SHA:-}"
 case "$sha" in *[!0-9a-f]*|"") fail "SOURCE_SHA required";; esac
 short=$(printf '%s' "$sha" | cut -c1-12)
-tag="prod-sha-${short}"
+# 环境通道：按触发分支决定 tag 前缀（默认 prod，保持旧行为）。
+case "${SOURCE_REF:-}" in
+  refs/heads/test) prefix="test-sha" ;;
+  *)               prefix="prod-sha" ;;
+esac
+tag="${prefix}-${short}"
 ref="oci.ktyun.cc/ktaiorg/artex:${tag}"
 
 echo "=== 1/4 web build $(date -u +%H:%M:%SZ)"
