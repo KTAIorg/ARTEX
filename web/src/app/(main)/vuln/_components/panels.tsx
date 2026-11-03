@@ -819,44 +819,68 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
         </div>
       </Card>
 
-      {/* Shodan 采集确认弹窗：查询可编辑，无影响组件时可手填 */}
-      <Dialog open={collectTarget !== null} onOpenChange={(v) => !v && setCollectTarget(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>从 Shodan 采集 · {collectTarget?.cve.cve_id}</DialogTitle>
-            <DialogDescription>
-              按 Shodan 查询体采集互联网暴露资产并自动入库（每页 100 条、1 credit，默认 5 页）。
-              同一查询的未完成任务会幂等合并，不重复扣费。
-            </DialogDescription>
-          </DialogHeader>
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="shodan-collect-query">Shodan 查询体</FieldLabel>
-              <Input
-                id="shodan-collect-query"
-                autoFocus
-                placeholder='如 "log4j country:CN"'
-                value={collectTarget?.query ?? ""}
-                onChange={(e) =>
-                  setCollectTarget((t) => (t ? { ...t, query: e.target.value } : t))
-                }
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitCollect();
-                }}
-              />
-            </Field>
-          </FieldGroup>
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => setCollectTarget(null)}>
-              取消
-            </Button>
-            <Button size="sm" disabled={collecting !== ""} onClick={submitCollect}>
-              {collecting !== "" ? "入队中…" : "入队采集"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <VulnCollectDialog
+        target={collectTarget}
+        busy={collecting !== ""}
+        onQueryChange={(q) => setCollectTarget((t) => (t ? { ...t, query: q } : t))}
+        onClose={() => setCollectTarget(null)}
+        onSubmit={submitCollect}
+      />
     </div>
+  );
+}
+
+
+// VulnCollectDialog Shodan 采集确认弹窗（关注清单/全量目录共用）：查询可编辑，
+// 无影响组件预填时手填。入队与错误反馈由调用方 submitCollect 完成。
+export function VulnCollectDialog({
+  target,
+  busy,
+  onQueryChange,
+  onClose,
+  onSubmit,
+}: {
+  target: { cve: VulnCve; query: string } | null;
+  busy: boolean;
+  onQueryChange: (q: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <Dialog open={target !== null} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>从 Shodan 采集{target ? ` · ${target.cve.cve_id}` : ""}</DialogTitle>
+          <DialogDescription>
+            按 Shodan 查询体采集互联网暴露资产并自动入库（每页 100 条、1 credit，默认 5 页）。
+            同一查询的未完成任务会幂等合并，不重复扣费。
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="shodan-collect-query">Shodan 查询体</FieldLabel>
+            <Input
+              id="shodan-collect-query"
+              autoFocus
+              placeholder='如 "log4j country:CN"'
+              value={target?.query ?? ""}
+              onChange={(e) => onQueryChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onSubmit();
+              }}
+            />
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button size="sm" disabled={busy} onClick={onSubmit}>
+            {busy ? "入队中…" : "入队采集"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -16,9 +16,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { type VulnCveCatalogItem, vuln } from "@/lib/vuln";
+import { toast } from "sonner";
 
-import { cveEmptyMessage, VulnSeverityBadge } from "./panels";
+import { type VulnCveCatalogItem, type VulnCve, vuln } from "@/lib/vuln";
+
+import { cveEmptyMessage, VulnCollectDialog, VulnSeverityBadge } from "./panels";
 
 export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
   // 草稿筛选：输入中不触发请求，点「筛选」才提交（28 万条目录避免无谓翻页查询）。
@@ -33,6 +35,37 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState("");
   const [years, setYears] = React.useState<{ year: number; count: number }[]>([]);
+  // Shodan 采集（#192）：目录无影响组件元数据，查询由用户在弹窗中手填。
+  const [collecting, setCollecting] = React.useState(false);
+  const [collectTarget, setCollectTarget] = React.useState<{ cve: VulnCve; query: string } | null>(null);
+
+  const submitCollect = async () => {
+    if (!collectTarget) return;
+    const query = collectTarget.query.trim();
+    if (!query) {
+      toast.error("请填写 Shodan 查询体，如 \"log4j country:CN\"");
+      return;
+    }
+    setCollecting(true);
+    try {
+      const resp = await fetch("/api/vuln/shodan-collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, cve_id: collectTarget.cve.cve_id, max_pages: 5 }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        toast.error(String(data?.error ?? `入队失败（HTTP ${resp.status}）`));
+        return;
+      }
+      toast.success(`已入队采集（job #${data.job_id}）：${query}，完成后资产自动入库`);
+      setCollectTarget(null);
+    } catch (e) {
+      toast.error(`采集入队失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setCollecting(false);
+    }
+  };
   const reqRef = React.useRef(0);
 
   // 年份桶懒加载一次（下拉数据源）；失败不阻塞主列表，仅少一个筛选项。
@@ -149,6 +182,7 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
                 <TableHead className="w-28">发布日期</TableHead>
                 <TableHead className="w-16">KEV</TableHead>
                 <TableHead className="w-24">来源</TableHead>
+                <TableHead className="w-24 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -174,11 +208,27 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
                     )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{c.source || "—"}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7"
+                      title="手填 Shodan 查询体入队采集（异步，完成后进入资产列表）"
+                      onClick={() =>
+                        setCollectTarget({
+                          cve: { cve_id: c.cve_id, title: c.title ?? "" } as VulnCve,
+                          query: "",
+                        })
+                      }
+                    >
+                      采集
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-muted-foreground py-12 text-center text-sm">
+                  <TableCell colSpan={7} className="text-muted-foreground py-12 text-center text-sm">
                     {cveEmptyMessage(loading, error)}
                   </TableCell>
                 </TableRow>
@@ -233,6 +283,14 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
           </div>
         )}
       </Card>
+
+      <VulnCollectDialog
+        target={collectTarget}
+        busy={collecting}
+        onQueryChange={(q) => setCollectTarget((t) => (t ? { ...t, query: q } : t))}
+        onClose={() => setCollectTarget(null)}
+        onSubmit={submitCollect}
+      />
     </div>
   );
 }
