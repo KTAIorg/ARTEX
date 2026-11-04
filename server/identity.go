@@ -188,7 +188,7 @@ func identityResolveRoles(ctx context.Context, baseURL, token string) ([]string,
 }
 
 // POST /api/auth/identity/exchange — body {"token":"<identity opaque token>"}。
-// 校验通过则签发 ARTEX 自己的 7 天 JWT（subject 固定 "ARTEX"，与账密登录同一把
+// 校验通过则签发本服务自己的 7 天 JWT（subject 固定为内置管理员，与账密登录同一把
 // jwtKey），前端走既有登录后流程。
 func (s *Server) identityExchange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

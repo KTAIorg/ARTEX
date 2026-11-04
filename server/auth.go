@@ -84,7 +84,10 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	return buf, nil
 }
 
-// signJWT issues a 7-day HS256 token for user ARTEX; roles 写入 claims 供管理面
+// adminUsername 是内置管理员的登录名。中性化命名，避免公网部署被产品名检索到。
+const adminUsername = "admin"
+
+// signJWT issues a 7-day HS256 token for the built-in admin; roles 写入 claims 供管理面
 // 鉴权。未传 roles 时按内网单管理员语义签发 ["admin"]，保持存量调用兼容；
 // 生产路径（账密登录/首次设密/identity 换发）都显式传角色。
 func signJWT(key []byte, roles ...string) (string, error) {
@@ -92,7 +95,7 @@ func signJWT(key []byte, roles ...string) (string, error) {
 		roles = []string{"admin"}
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":   "ARTEX",
+		"sub":   adminUsername,
 		"iat":   time.Now().Unix(),
 		"exp":   time.Now().Add(jwtTTL).Unix(),
 		"roles": roles,
@@ -126,12 +129,12 @@ func verifyJWT(tokenStr string, key []byte) (bool, []string) {
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
-// artex_token cookie, or ?token= query param (for SSE connections).
+// sid cookie, or ?token= query param (for SSE connections).
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
-	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
+	if c, err := r.Cookie("sid"); err == nil && c.Value != "" {
 		return c.Value
 	}
 	return r.URL.Query().Get("token")
@@ -324,7 +327,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
-	if req.Username != "ARTEX" {
+	if req.Username != adminUsername {
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}

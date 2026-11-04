@@ -119,7 +119,7 @@ func TestVulnProxyCookieAndArtexJWTNotForwarded(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/vuln/assets", nil)
 	req.Header.Set("X-Identity-Token", "tok-user-2")
 	req.Header.Set("Authorization", "Bearer "+artexJWT) // 浏览器侧原有 ARTEX JWT
-	req.Header.Add("Cookie", "artex_token=stale; other=1")
+	req.Header.Add("Cookie", "sid=stale; other=1")
 	s.vulnProxy(w, req)
 
 	if w.Code != 200 {
@@ -155,9 +155,12 @@ func TestVulnProxyPostBodyPassthrough(t *testing.T) {
 	}
 }
 
-// TestVulnProxyUpstream401MarksIdentityExpired：上游 401 状态码与 body 原样透传，
-// 并附加 X-Identity-Expired: true 供前端识别需要重新登录。
-func TestVulnProxyUpstream401MarksIdentityExpired(t *testing.T) {
+// TestVulnProxyUpstream401PassesThrough：上游 401 状态码与 body 原样透传。
+//
+// 代理不再把「任何 401」都标成 identity 过期：401 既可能是令牌失效，也可能是
+// 「这个账号在目标环境没有权限」。以前统一加 X-Identity-Expired 会让前端清空
+// 令牌并踢回登录页，用户永远看不到真实原因（issue #61 排障记录）。
+func TestVulnProxyUpstream401PassesThrough(t *testing.T) {
 	fake := newVulnTestUpstream(t, http.StatusUnauthorized, `{"error":"token expired"}`, nil)
 	t.Setenv("VULN_PROXY_TARGET", fake.URL)
 
@@ -165,11 +168,32 @@ func TestVulnProxyUpstream401MarksIdentityExpired(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status=%d want 401（上游状态码原样透传）; body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Header().Get("X-Identity-Expired"); got != "true" {
-		t.Fatalf("X-Identity-Expired=%q want true", got)
+	if got := w.Header().Get("X-Identity-Expired"); got != "" {
+		t.Fatalf("X-Identity-Expired=%q want empty（401 不再自动标记为令牌过期）", got)
 	}
 	if strings.TrimSpace(w.Body.String()) != `{"error":"token expired"}` {
 		t.Fatalf("body 透传错误: %s", w.Body.String())
+	}
+}
+
+// TestVulnProxyUpstream401KeepsExplicitExpiredHeader：上游自己给了过期信号时，
+// 代理必须原样透传，前端据此提示重新登录。
+func TestVulnProxyUpstream401KeepsExplicitExpiredHeader(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Identity-Expired", "true")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"token expired"}`))
+	}))
+	t.Cleanup(fake.Close)
+	t.Setenv("VULN_PROXY_TARGET", fake.URL)
+
+	w := callVulnProxy(&Server{}, http.MethodGet, "/api/vuln/assets", "", "tok-expired")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Identity-Expired"); got != "true" {
+		t.Fatalf("X-Identity-Expired=%q want true（上游显式标记必须透传）", got)
 	}
 }
 

@@ -61,6 +61,13 @@ export interface VulnCveCatalogItem {
   source?: string | null;
   cvss_vector?: string | null;
   cvss_version?: string | null;
+  // kt-vuln PR #62 新增：中文摘要 / 完整原文 / 结构化维度 / EPSS。
+  summary_zh?: string | null;
+  description?: string | null;
+  vendor?: string | null;
+  product?: string | null;
+  cwe?: string[] | null;
+  epss?: number | null;
 }
 
 // 与 kt-vuln cve-catalog 支持的检索参数对齐（page/page_size 走方法入参）。
@@ -68,6 +75,12 @@ export interface VulnCveCatalogFilters {
   q?: string;
   year?: number;
   min_severity?: number;
+  severity_max?: number;
+  published_from?: string;
+  published_to?: string;
+  vendor?: string;
+  product?: string;
+  cwe?: string;
   sort?: string;
   order?: string;
 }
@@ -157,18 +170,30 @@ async function vulnHttp<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (r.status === 401) {
-    // 上游明确指出是 identity 令牌问题：只清 identity 令牌，保留 ARTEX 会话。
+    // 上游明确指出是 identity 令牌过期：只清 identity 令牌，保留 ARTEX 会话。
     if (r.headers.get("X-Identity-Expired") === "true") {
       auth.clearIdentityToken();
       throw new Error("KT Identity 令牌已过期或失效，请退出后通过 Telegram 重新登录");
     }
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      localStorage.removeItem("artex.identity_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
+    // 其它 401 一律视为「上游拒绝」，不能当成本地会话失效：
+    // 以前这里会清 sid/idt 并跳登录页，把「这个 identity 账号在目标环境没权限」
+    // 误判成「登录过期」，用户被踢出去却永远看不到原因。
+    let detail = "";
+    try {
+      const payload = (await r.json()) as {
+        error?: string | { message?: string; code?: string };
+        message?: string;
+      };
+      if (typeof payload?.error === "string") detail = payload.error;
+      else if (payload?.error && typeof payload.error === "object") {
+        detail = payload.error.message || payload.error.code || "";
+      } else if (typeof payload?.message === "string") detail = payload.message;
+    } catch {
+      // 上游没返回 JSON 就只报状态码
     }
-    throw new Error("未授权");
+    throw new Error(
+      `上游拒绝访问（401${detail ? `：${detail}` : ""}）。通常是该 KT Identity 账号在目标 vuln 环境没有权限，或本地登录的环境与上游不是同一套；确认有权限后可退出并重新用 Telegram 登录重试。`,
+    );
   }
   if (!r.ok) {
     const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;

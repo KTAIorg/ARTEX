@@ -11,6 +11,9 @@ const nextConfig = {
   // 避免父目录的 lockfile 影响根目录推断及资源路径生成。
   turbopack: { root: fileURLToPath(new URL(".", import.meta.url)) },
   reactCompiler: true,
+  // 公网指纹：不回 X-Powered-By，不产 sourcemap（产物可被还原源码）。
+  poweredByHeader: false,
+  productionBrowserSourceMaps: false,
   // 允许从局域网 IP 访问 dev 资源（HMR），按需增删。
   // dev 阶段放开任意 IPv4 来源访问 /_next/* 与 HMR（局域网 IP 变动也不受影响）。
   // 注意：Next 出于安全禁止裸 "*"，需用分段通配；"*.*.*.*" 匹配任意 IPv4。
@@ -34,7 +37,13 @@ const nextConfig = {
           // 开发：把 /api/* 反代到 Go 后端（默认 :8787，可用 AUTOPENTEST_API 覆盖）。
           async rewrites() {
             const backend = process.env.AUTOPENTEST_API ?? "http://localhost:8787";
-            return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
+            return [
+              { source: "/api/:path*", destination: `${backend}/api/:path*` },
+              // KT Identity 反代：生产由 Go 服务同源提供 /identity/*；
+              // dev 里 Next 与 Go 分端口，必须显式转发，否则登录页的 Telegram
+              // 快捷登录拿不到 challenge，只会显示「无法连接 KT Identity 服务」。
+              { source: "/identity/:path*", destination: `${backend}/identity/:path*` },
+            ];
           },
         }),
 };

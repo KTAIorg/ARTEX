@@ -165,7 +165,7 @@ func TestIdentityExchangeIssuesArtexJWT(t *testing.T) {
 	if err != nil || !parsed.Valid {
 		t.Fatalf("解析返回 token: %v", err)
 	}
-	if claims, ok := parsed.Claims.(jwt.MapClaims); !ok || claims["sub"] != "ARTEX" {
+	if claims, ok := parsed.Claims.(jwt.MapClaims); !ok || claims["sub"] != "admin" {
 		t.Fatalf("token subject 应为 ARTEX，得到 %v", parsed.Claims)
 	}
 }

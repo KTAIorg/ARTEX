@@ -283,21 +283,31 @@ type vulnFocusCve struct {
 type vulnCatalogItem struct {
 	CveID         string   `json:"cve_id"`
 	Title         string   `json:"title,omitempty"`
+	SummaryZh     string   `json:"summary_zh,omitempty"`
 	Severity      *float64 `json:"severity,omitempty"`
 	Published     string   `json:"published,omitempty"`
 	PublishedYear *int     `json:"published_year,omitempty"`
 	Kev           *bool    `json:"kev,omitempty"`
 	Source        string   `json:"source,omitempty"`
+	Vendor        string   `json:"vendor,omitempty"`
+	Product       string   `json:"product,omitempty"`
+	Cwe           []string `json:"cwe,omitempty"`
+	Epss          *float64 `json:"epss,omitempty"`
 }
 
 type vulnCatalogItemRaw struct {
 	CveID         string   `json:"cve_id"`
 	Title         *string  `json:"title"`
+	SummaryZh     *string  `json:"summary_zh"`
 	Severity      *float64 `json:"severity"`
 	Published     *string  `json:"published"`
 	PublishedYear *int     `json:"published_year"`
 	Kev           *bool    `json:"kev"`
 	Source        *string  `json:"source"`
+	Vendor        *string  `json:"vendor"`
+	Product       *string  `json:"product"`
+	Cwe           []string `json:"cwe"`
+	Epss          *float64 `json:"epss"`
 }
 
 // vulnAssetItem 是 /api/assets 条目的紧凑形态：保留目标定位与价值维度，
@@ -411,27 +421,39 @@ func (s *Server) toolVulnListCves() actool.CoreTool {
 	desc := "查询 KT 漏洞情报平台(kt-vuln, vuln.ktyun.cc)的 CVE 列表。两个 scope 语义不同、不要混用：\n" +
 		"• scope=focus 关注清单：约 36 条精选 CVE（人工运营+有资产判定事实），每条带暴露面统计 surface(疑似/可确认/已修复/未知资产数)与影响组件版本 affected，回答「我们在关注哪些漏洞、各自影响面多大」用它；\n" +
 		"• scope=catalog 全量目录：NVD 同步的全量 CVE 字典(28 万+条)，仅元数据(编号/标题/严重度/发布日期/KEV/来源)、无暴露面，检索任意 CVE 是否存在及基本信息用它。\n" +
-		"q 关键词检索(focus 匹配编号/标题/分类/组件，catalog 匹配编号/标题)；year 发布年份；min_severity CVSS 下限(如 9.0)；page/page_size 分页(默认 1/50，上限 200；focus 为客户端分页)；sort/order 仅 catalog 有效(severity|published|cve_id，默认 severity 降序)。数据事实源在 vuln.ktyun.cc，实时查询、不落副本。"
+		"q 关键词检索(focus 匹配编号/标题/分类/组件，catalog 匹配编号/标题)；year 发布年份；min_severity CVSS 下限(如 9.0)；page/page_size 分页(默认 1/50，上限 200；focus 为客户端分页)；sort/order 仅 catalog 有效(severity|published|cve_id|epss|risk，默认 severity 降序)；catalog 另支持 severity_max、published_from/to、vendor、product、cwe 组合筛选。数据事实源在 vuln.ktyun.cc，实时查询、不落副本。"
 	schema := objSchema(map[string]any{
-		"scope":        map[string]any{"type": "string", "enum": []string{"focus", "catalog"}, "description": "focus=关注清单(精选+暴露面) | catalog=全量目录(NVD 字典,仅检索)"},
-		"q":            strParam("关键词：focus 匹配 CVE 编号/标题/分类/影响组件；catalog 匹配 cve_id/标题(模糊)"),
-		"year":         map[string]any{"type": "integer", "description": "发布年份，如 2024（focus 按编号中的年份过滤）"},
-		"min_severity": map[string]any{"type": "number", "description": "CVSS 分下限 0-10，如 9.0"},
-		"page":         map[string]any{"type": "integer", "description": "页码，从 1 起，默认 1"},
-		"page_size":    map[string]any{"type": "integer", "description": "每页条数，默认 50、上限 200"},
-		"sort":         map[string]any{"type": "string", "enum": []string{"severity", "published", "cve_id"}, "description": "仅 catalog：排序字段，默认 severity"},
-		"order":        map[string]any{"type": "string", "enum": []string{"desc", "asc"}, "description": "仅 catalog：排序方向，默认 desc"},
+		"scope":          map[string]any{"type": "string", "enum": []string{"focus", "catalog"}, "description": "focus=关注清单(精选+暴露面) | catalog=全量目录(NVD 字典,仅检索)"},
+		"q":              strParam("关键词：focus 匹配 CVE 编号/标题/分类/影响组件；catalog 匹配 cve_id/标题(模糊)"),
+		"year":           map[string]any{"type": "integer", "description": "发布年份，如 2024（focus 按编号中的年份过滤）"},
+		"min_severity":   map[string]any{"type": "number", "description": "CVSS 分下限 0-10，如 9.0"},
+		"severity_max":   map[string]any{"type": "number", "description": "CVSS 分上限 0-10，与 min_severity 组成评分区间，如 9.2-10"},
+		"published_from": strParam("发布日期下界（含），YYYY-MM-DD，仅 catalog"),
+		"published_to":   strParam("发布日期上界（含），YYYY-MM-DD，仅 catalog"),
+		"vendor":         strParam("厂商精确匹配，如 cisco（需采集侧已回填 vendor）"),
+		"product":        strParam("产品精确匹配，如 ios（需采集侧已回填 product）"),
+		"cwe":            strParam("弱点类型，如 CWE-79（命中 cwe 数组任一元素）"),
+		"page":           map[string]any{"type": "integer", "description": "页码，从 1 起，默认 1"},
+		"page_size":      map[string]any{"type": "integer", "description": "每页条数，默认 50、上限 200"},
+		"sort":           map[string]any{"type": "string", "enum": []string{"severity", "published", "cve_id", "epss", "risk"}, "description": "仅 catalog：severity|published|cve_id|epss|risk（risk=KEV→EPSS→CVSS→发布时间），默认 severity"},
+		"order":          map[string]any{"type": "string", "enum": []string{"desc", "asc"}, "description": "仅 catalog：排序方向，默认 desc"},
 	}, "scope")
 	return roTool("vuln_list_cves", desc, schema, func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
-			Scope       string   `json:"scope"`
-			Q           string   `json:"q"`
-			Year        int      `json:"year"`
-			MinSeverity *float64 `json:"min_severity"`
-			Page        int      `json:"page"`
-			PageSize    int      `json:"page_size"`
-			Sort        string   `json:"sort"`
-			Order       string   `json:"order"`
+			Scope         string   `json:"scope"`
+			Q             string   `json:"q"`
+			Year          int      `json:"year"`
+			MinSeverity   *float64 `json:"min_severity"`
+			SeverityMax   *float64 `json:"severity_max"`
+			PublishedFrom string   `json:"published_from"`
+			PublishedTo   string   `json:"published_to"`
+			Vendor        string   `json:"vendor"`
+			Product       string   `json:"product"`
+			Cwe           string   `json:"cwe"`
+			Page          int      `json:"page"`
+			PageSize      int      `json:"page_size"`
+			Sort          string   `json:"sort"`
+			Order         string   `json:"order"`
 		}
 		_ = json.Unmarshal(in, &a)
 		a.Q = strings.TrimSpace(a.Q)
@@ -496,6 +518,20 @@ func (s *Server) toolVulnListCves() actool.CoreTool {
 			if a.MinSeverity != nil {
 				q.Set("min_severity", strconv.FormatFloat(*a.MinSeverity, 'f', -1, 64))
 			}
+			if a.SeverityMax != nil {
+				q.Set("severity_max", strconv.FormatFloat(*a.SeverityMax, 'f', -1, 64))
+			}
+			for k, v := range map[string]string{
+				"published_from": a.PublishedFrom,
+				"published_to":   a.PublishedTo,
+				"vendor":         a.Vendor,
+				"product":        a.Product,
+				"cwe":            a.Cwe,
+			} {
+				if strings.TrimSpace(v) != "" {
+					q.Set(k, strings.TrimSpace(v))
+				}
+			}
 			if a.Sort != "" {
 				q.Set("sort", a.Sort)
 			}
@@ -516,9 +552,10 @@ func (s *Server) toolVulnListCves() actool.CoreTool {
 			items := make([]vulnCatalogItem, 0, len(resp.Items))
 			for _, it := range resp.Items {
 				items = append(items, vulnCatalogItem{
-					CveID: it.CveID, Title: vulnStr(it.Title), Severity: it.Severity,
-					Published: vulnStr(it.Published), PublishedYear: it.PublishedYear,
-					Kev: it.Kev, Source: vulnStr(it.Source),
+					CveID: it.CveID, Title: vulnStr(it.Title), SummaryZh: vulnStr(it.SummaryZh),
+					Severity: it.Severity, Published: vulnStr(it.Published), PublishedYear: it.PublishedYear,
+					Kev: it.Kev, Source: vulnStr(it.Source), Vendor: vulnStr(it.Vendor),
+					Product: vulnStr(it.Product), Cwe: it.Cwe, Epss: it.Epss,
 				})
 			}
 			return jsonResult(map[string]any{
