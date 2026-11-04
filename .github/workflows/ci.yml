@@ -1,0 +1,76 @@
+# ARTEX 主 CI（kt-security 组织，GitHub Actions）
+# push main → 构建镜像 → 推 Zot（不可变 tag）→ 调 B 机 CD webhook 滚动双 VPS。
+# 镜像拉取/推送认证：GitHub OIDC(audience=zot) 换 1 小时票，不落长期凭据。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 镜像元数据
+        id: meta
+        run: |
+          short=$(echo "$GITHUB_SHA" | cut -c1-10)
+          echo "image=oci.ktyun.cc/ktaiorg/artex" >> "$GITHUB_OUTPUT"
+          echo "tag=prod-sha-${short}" >> "$GITHUB_OUTPUT"
+
+      - name: GitHub OIDC 换 Zot 票
+        id: zot
+        run: |
+          set -euo pipefail
+          OIDC=$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zot" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
+          # Zot token endpoint 只认 Basic 凭据（Bearer 不解析）
+          TOK=$(curl -s -u "x-access-token:${OIDC}" \
+            "https://oci.ktyun.cc/zot/auth/token?service=oci.ktyun.cc&scope=repository:ktaiorg/artex:pull,push" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin).get("token",""))')
+          [ -n "$TOK" ] || { echo "换票失败"; exit 1; }
+          echo "oidc=${OIDC}" >> "$GITHUB_OUTPUT"
+          echo "token=${TOK}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+
+      - name: 推送 Zot
+        run: |
+          set -euo pipefail
+          echo "${{ steps.zot.outputs.token }}" | docker login oci.ktyun.cc -u x-access-token --password-stdin
+          docker push ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+
+      - name: CD webhook 滚动双机
+        run: |
+          set -euo pipefail
+          body=$(printf '{"target":"artex-both","image":"%s:%s"}' \
+            "${{ steps.meta.outputs.image }}" "${{ steps.meta.outputs.tag }}")
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+            -X POST "${CD_WEBHOOK_URL:-http://69.194.14.91:39876}/deploy" \
+            -H "Authorization: Bearer ${{ steps.zot.outputs.oidc }}" \
+            -H 'Content-Type: application/json' -d "$body" || true)
+          echo "CD webhook: $code"
+          [ "$code" = "202" ] || { echo "CD 非 202，需人工滚动"; exit 1; }
