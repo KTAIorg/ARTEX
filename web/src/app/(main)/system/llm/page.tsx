@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  KeyRoundIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -27,9 +28,10 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
+import type { LLMIdentity, LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { IdentitySheet } from "./_components/identity";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // 思考开关(thinking.type)与思考强度(reasoning_effort)是两个【互相独立】的字段，
@@ -71,11 +73,19 @@ function cooldownText(secs: number) {
   return `${Math.ceil(secs / 60)}min`;
 }
 
-// 一个配置在卡片上显示的「是否正常」。没填 Key 的配置根本发不出请求，比熔断更该先说；
+// 一个配置在卡片上显示的「是否正常」。没有可用认证的配置根本发不出请求，比熔断更该先说；
 // 其余状态来自轮询的熔断记录（轮询关着时不会产生新记录，此时「正常」= 没有已知故障）。
 type Health = { label: string; cls: string; hint?: string };
 function healthOf(p: LLMProfile, m?: LLMPoolMember): Health {
-  if (!p.api_key_hint) {
+  if (p.auth_mode === "identity") {
+    if (!p.identity_id) {
+      return {
+        label: "未绑定身份",
+        cls: "border-muted-foreground/40 text-muted-foreground",
+        hint: "请选择 KT 身份，无法调用",
+      };
+    }
+  } else if (!p.api_key_hint) {
     return {
       label: "未配置 Key",
       cls: "border-muted-foreground/40 text-muted-foreground",
@@ -215,7 +225,8 @@ function PoolSheet({
                 </div>
                 {inChain.length < 2 && (
                   <p className="text-muted-foreground text-xs">
-                    当前只有 {inChain.length} 个可用配置，轮询不会生效——至少需要 2 个已填 API Key 且参与轮询的配置。
+                    当前只有 {inChain.length} 个可用配置，轮询不会生效——至少需要 2 个已配置认证（API Key 或 KT
+                    身份）且参与轮询的配置。
                   </p>
                 )}
                 {chain.map((m) => {
@@ -300,11 +311,13 @@ function PoolSheet({
 
 function ProfileSheet({
   profile,
+  identities,
   open,
   onOpenChange,
   onSaved,
 }: {
   profile: LLMProfile | null; // null = 新建
+  identities: LLMIdentity[];
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onSaved: (id: string) => void;
@@ -315,6 +328,8 @@ function ProfileSheet({
   const [model, setModel] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
   const [proxy, setProxy] = React.useState("");
+  const [authMode, setAuthMode] = React.useState<"static" | "identity">("static");
+  const [identityID, setIdentityID] = React.useState(NONE);
   const [apiKey, setApiKey] = React.useState("");
   const [keyHint, setKeyHint] = React.useState("");
   const [rps, setRps] = React.useState("0");
@@ -344,6 +359,8 @@ function ProfileSheet({
     setModel(profile?.model ?? "");
     setBaseUrl(profile?.base_url ?? "");
     setProxy(profile?.proxy ?? "");
+    setAuthMode(profile?.auth_mode === "identity" ? "identity" : "static");
+    setIdentityID(profile?.identity_id ? String(profile.identity_id) : NONE);
     setRps(String(profile?.rate_per_second ?? 0));
     setRpm(String(profile?.rate_per_minute ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
@@ -363,13 +380,23 @@ function ProfileSheet({
   }, [open, profile]);
 
   const profileId = profile ? Number(profile.id) : undefined;
+  const selectedIdentityID = authMode === "identity" && identityID !== NONE ? Number(identityID) : 0;
+  const effectiveAPIKey = authMode === "identity" ? "" : apiKey;
 
   async function loadModels() {
     if (loadingModels) return;
     setLoadingModels(true);
     setModels([]);
     try {
-      const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId);
+      const r = await api.fetchLLMModels(
+        format,
+        baseUrl,
+        effectiveAPIKey,
+        proxy,
+        profileId,
+        authMode,
+        selectedIdentityID,
+      );
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models);
         setModelsOpen(true);
@@ -394,13 +421,15 @@ function ProfileSheet({
         format,
         model,
         baseUrl,
-        apiKey,
+        effectiveAPIKey,
         proxy,
         toStore(thinkingType),
         toStore(effort),
         profileId,
         streaming,
         sessionHeaderKey.trim(),
+        authMode,
+        selectedIdentityID,
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
@@ -420,6 +449,10 @@ function ProfileSheet({
       toast.error("请填写名称与模型");
       return;
     }
+    if (authMode === "identity" && !selectedIdentityID) {
+      toast.error("身份直连模式必须选择一个 KT 身份");
+      return;
+    }
     if (saving) return;
     setSaving(true);
     try {
@@ -430,7 +463,9 @@ function ProfileSheet({
         model: model.trim(),
         base_url: baseUrl.trim(),
         proxy: proxy.trim(),
-        api_key: apiKey,
+        api_key: effectiveAPIKey,
+        auth_mode: authMode,
+        identity_id: selectedIdentityID,
         rate_per_second: Number(rps) || 0,
         rate_per_minute: Number(rpm) || 0,
         context_window_k: Number(cw) || 0,
@@ -595,15 +630,61 @@ function ProfileSheet({
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="p-api-key">API Key</Label>
-            <Input
-              id="p-api-key"
-              type="password"
-              placeholder={keyHint ? `已设置（${keyHint}），留空保持不变` : "sk-…"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
+            <Label>认证方式</Label>
+            <Select
+              value={authMode}
+              onValueChange={(v) => {
+                const mode = v as "static" | "identity";
+                setAuthMode(mode);
+                if (mode === "identity") setApiKey("");
+                else setIdentityID(NONE);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="static">静态 API Key</SelectItem>
+                <SelectItem value="identity">KT 身份直连（零模型 Key）</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-muted-foreground text-xs">
+              身份直连只保存 KT 机器身份凭据，由后端在内存中换短时 token；删除 relay scope
+              或禁用影子用户即断供，无需删除模型 Key。
+            </p>
           </div>
+
+          {authMode === "identity" ? (
+            <div className="grid gap-2">
+              <Label>KT 身份</Label>
+              <Select value={identityID} onValueChange={setIdentityID}>
+                <SelectTrigger>
+                  <SelectValue placeholder="选择身份" />
+                </SelectTrigger>
+                <SelectContent>
+                  {identities.map((identity) => (
+                    <SelectItem key={identity.id} value={String(identity.id)}>
+                      {identity.name} · {identity.client_id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {identities.length === 0 && (
+                <p className="text-muted-foreground text-xs">还没有身份，请先关闭此抽屉，在右上角「KT 身份」里新建。</p>
+              )}
+            </div>
+          ) : (
+            <div className="grid gap-2">
+              <Label htmlFor="p-api-key">API Key</Label>
+              <Input
+                id="p-api-key"
+                type="password"
+                placeholder={keyHint ? `已设置（${keyHint}），留空保持不变` : "sk-…"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
@@ -787,6 +868,8 @@ function ProfileSheet({
 
 export default function LLMPage() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
+  const [identities, setIdentities] = React.useState<LLMIdentity[]>([]);
+  const [identityOpen, setIdentityOpen] = React.useState(false);
   const [pool, setPool] = React.useState<LLMPoolStatus | null>(null);
   const [poolOpen, setPoolOpen] = React.useState(false);
   // 抽屉的开关和内容分开存：关闭时 editing 保持不变，否则关闭动画期间标题会从
@@ -808,9 +891,11 @@ export default function LLMPage() {
 
   const load = React.useCallback(async () => {
     try {
-      setProfiles(await api.llmProfiles());
-    } catch {
-      /* ignore */
+      const [profileList, identityList] = await Promise.all([api.llmProfiles(), api.llmIdentities()]);
+      setProfiles(profileList);
+      setIdentities(identityList);
+    } catch (e) {
+      toast.error(`加载 LLM 配置失败：${(e as Error).message}`);
     }
     await loadPool();
   }, [loadPool]);
@@ -870,6 +955,9 @@ export default function LLMPage() {
               </Badge>
             )}
           </Button>
+          <Button size="sm" variant="outline" onClick={() => setIdentityOpen(true)}>
+            <KeyRoundIcon /> KT 身份
+          </Button>
           <Button size="sm" variant="outline" onClick={() => openEditor(null)}>
             <PlusIcon /> 新建
           </Button>
@@ -927,7 +1015,11 @@ export default function LLMPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
-                      {p.api_key_hint && <span>{p.api_key_hint}</span>}
+                      {p.auth_mode === "identity" ? (
+                        <span>KT 身份直连</span>
+                      ) : (
+                        p.api_key_hint && <span>{p.api_key_hint}</span>
+                      )}
                       <span>
                         {p.rate_per_second}/s · {p.rate_per_minute}/min
                       </span>
@@ -983,7 +1075,14 @@ export default function LLMPage() {
         </TabsContent>
       </Tabs>
 
-      <ProfileSheet profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
+      <ProfileSheet
+        profile={editing}
+        identities={identities}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={() => void load()}
+      />
+      <IdentitySheet open={identityOpen} onOpenChange={setIdentityOpen} identities={identities} onChanged={load} />
       <PoolSheet open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
     </div>
   );

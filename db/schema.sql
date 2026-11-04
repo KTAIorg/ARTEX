@@ -453,6 +453,44 @@ ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_retry_check CHECK (
     retry_connect_attempts >= -1 AND retry_empty_attempts >= -1 AND retry_stream_attempts >= -1
     AND retry_connect_interval_ms >= 0 AND retry_empty_interval_ms >= 0 AND retry_stream_interval_ms >= 0);
 
+-- KT 身份直连（零模型 Key）：见 docs/adr/模型接入认证设计.md。
+-- llm_identities 存的是「身份凭据」(Casdoor client_credentials)，不是模型 Key：
+-- 泄漏它换不到模型额度，只能换短时身份 token，且还要过 introspect + 影子用户两道闸。
+-- 多个 profile（旗舰/便宜各档）共用同一身份，凭据不重复存。
+CREATE TABLE IF NOT EXISTS llm_identities (
+    id                  BIGSERIAL PRIMARY KEY,
+    name                TEXT NOT NULL UNIQUE,
+    -- OAuth2 token 端点，如 https://auth.ktyun.cc/api/login/oauth/access_token
+    token_url           TEXT NOT NULL,
+    client_id           TEXT NOT NULL,
+    client_secret       TEXT NOT NULL,
+    client_secret_hint  TEXT NOT NULL DEFAULT '',
+    -- 请求的 scope（如 newapi.relay），空=不申请
+    scope               TEXT NOT NULL DEFAULT '',
+    -- relay 侧的 managed token 名，即 X-Kito-Token-Name 头的值（如 artex）
+    managed_token_name  TEXT NOT NULL DEFAULT '',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_llm_ident_upd ON llm_identities;
+CREATE TRIGGER trg_llm_ident_upd BEFORE UPDATE ON llm_identities
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- profile 的认证模式：static=传统 api_key（默认，旧行为不变）；
+-- identity=KT 身份直连（api_key 必须为空，identity_id 必填）。
+-- 注意 identity_id 不进上面的 CREATE TABLE：llm_identities 建表语句在 llm_profiles
+-- 之后，全新库首次执行时内联 FK 会找不到目标表，故统一走下面的 ALTER 补列。
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT 'static';
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_auth_mode_check;
+ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_auth_mode_check
+    CHECK (auth_mode IN ('static','identity'));
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS identity_id BIGINT;
+-- 身份删除必须被引用方原子阻断，不能 ON DELETE SET NULL 后让 identity profile
+-- 悄悄失效。旧库若已建过 SET NULL 外键，这里每次启动幂等替换成 RESTRICT。
+ALTER TABLE llm_profiles DROP CONSTRAINT IF EXISTS llm_profiles_identity_id_fkey;
+ALTER TABLE llm_profiles ADD CONSTRAINT llm_profiles_identity_id_fkey
+    FOREIGN KEY (identity_id) REFERENCES llm_identities(id) ON DELETE RESTRICT;
+
 -- 思考开关字段 thinking_type，从旧的单一 reasoning_effort 语义一次性拆分而来。
 -- schema.sql 每次启动都执行，故迁移必须只跑一次：仅当该列尚不存在时才回填，
 -- 否则每次启动都会把用户后来手动设的组合覆盖回去。旧 reasoning_effort 语义：

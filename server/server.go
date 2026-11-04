@@ -357,6 +357,31 @@ func (s *Server) agentRunSeconds(key string) int {
 	return a.RunSecs
 }
 
+// attachProfileAuth 把 profile 的认证模式解析进 cfg（见 docs/adr/模型接入认证设计.md）。
+// identity 模式：加载身份并挂到 cfg.Identity，返回 true；static 模式返回 false，
+// 可用性由调用方按 cfg.APIKey 判定（保持旧行为）。身份行缺失/加载失败视为不可用。
+func (s *Server) attachProfileAuth(cfg *agent.Config, p *db.LLMProfile) bool {
+	if p.AuthMode != "identity" {
+		return false
+	}
+	if p.IdentityID <= 0 {
+		return false
+	}
+	ident, err := s.m.pg.IdentityByID(p.IdentityID)
+	if err != nil || ident == nil {
+		return false
+	}
+	cfg.APIKey = "" // 身份直连不允许残留 key；真实认证头由 identityTransport 注入
+	cfg.Identity = &agent.IdentitySource{
+		TokenURL:         ident.TokenURL,
+		ClientID:         ident.ClientID,
+		ClientSecret:     ident.ClientSecret,
+		Scope:            ident.Scope,
+		ManagedTokenName: ident.ManagedTokenName,
+	}
+	return true
+}
+
 // loadLLMConfig reads the active LLM profile from PG (llm_profiles).
 func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	p, err := s.m.pg.ActiveProfile()
@@ -372,7 +397,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
+	if !s.attachProfileAuth(&cfg, p) && cfg.APIKey == "" {
 		return cfg, false
 	}
 	s.cfgMu.Lock()
@@ -414,7 +439,10 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
-		Retry: retry,
+		// 这个 legacy 端点只表达静态 api_key；显式保存它就是切回 static，
+		// 不能沿用旧 identity 引用而把两套认证同时写进一行。
+		AuthMode: "static",
+		Retry:    retry,
 	})
 	if err != nil {
 		return err
@@ -468,7 +496,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
 	if active, _ := s.m.pg.ActiveProfile(); active != nil {
-		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
+		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg.Equal(cfg) {
 			prov, _, _ = s.providerForProfile(active.ID)
 		}
 	}
@@ -528,7 +556,8 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 }
 
 // loadProfileConfig builds an agent.Config from a specific profile id (with its key).
-// ok=false when the profile is missing or has no api key.
+// ok=false when the profile is missing or has no usable auth (no api key, or an
+// identity-mode profile whose identity row is gone).
 func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	p, err := s.m.pg.ProfileByID(id)
 	if err != nil || p == nil {
@@ -543,8 +572,8 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
-		return cfg, false
+	if !s.attachProfileAuth(&cfg, p) && cfg.APIKey == "" {
+		return agent.Config{}, false
 	}
 	return cfg, true
 }
@@ -1048,11 +1077,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/llm/profiles", admin(s.pgSaveProfile))
 	mux.HandleFunc("DELETE /api/llm/profiles/{id}", admin(s.pgDeleteProfile))
 	mux.HandleFunc("POST /api/llm/profiles/active", admin(s.pgActivateProfile))
+	// KT 身份直连（零模型 Key）：身份 CRUD 与 profile 同层。
+	mux.HandleFunc("GET /api/llm/identities", s.pgListIdentities)
+	mux.HandleFunc("POST /api/llm/identities", admin(s.pgSaveIdentity))
+	mux.HandleFunc("DELETE /api/llm/identities/{id}", admin(s.pgDeleteIdentity))
 	mux.HandleFunc("GET /api/llm/retry-policy", s.pgGetLLMRetryPolicy)
 	mux.HandleFunc("POST /api/llm/retry-policy", admin(s.pgSaveLLMRetryPolicy))
 	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
 	mux.HandleFunc("POST /api/llm/pool/reset", admin(s.pgLLMPoolReset))
-	mux.HandleFunc("POST /api/llm/models", s.pgListModels)
+	// 拉模型会用库存 api_key 或身份凭据换 token 后访问调用方给的 base_url；
+	// 必须限管理员，否则低权限用户可把 Bearer 引导到恶意端点窃取。
+	mux.HandleFunc("POST /api/llm/models", admin(s.pgListModels))
 
 	// 拦截规则管理（规则变更与审批决断是管理面；查询类不设限）
 	mux.HandleFunc("GET /api/intercept/rules", s.interceptListRules)
@@ -1534,6 +1569,8 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		AuthMode         string `json:"auth_mode"`          // identity=直接测表单所选身份；空=兼容旧客户端，从 profile 推断
+		IdentityID       int64  `json:"identity_id"`        // identity 模式的身份，可测尚未保存的 profile
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1556,9 +1593,29 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
 	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
 	// 会话头名同理：表单未带时用已存 profile 的值兜底。
-	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "") {
+	// 身份直连 profile：表单无 key 属预期，挂身份后由 identityTransport 注入
+	// 真实认证头，测试链路与生产完全一致。
+	identityMode := false
+	if req.AuthMode == "identity" {
+		// 表单里的认证选择优先于库存 profile：这样「新建但未保存」以及
+		// 「刚切换身份还没保存」都能测，而且测的就是即将保存的那套配置。
+		if req.IdentityID <= 0 {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": "请选择 KT 身份"})
+			return
+		}
+		identityMode = s.attachProfileAuth(&cfg, &db.LLMProfile{AuthMode: "identity", IdentityID: req.IdentityID})
+		if !identityMode {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": "KT 身份不存在或不可用"})
+			return
+		}
+	} else if req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if cfg.APIKey == "" {
+			// 旧客户端不带 auth_mode：保留「测试已存 identity profile」的能力；
+			// 新客户端显式 static 时绝不偷偷沿用库存身份。
+			if req.AuthMode == "" && s.attachProfileAuth(&cfg, p) {
+				identityMode = true
+			}
+			if cfg.APIKey == "" && !identityMode {
 				cfg.APIKey = p.APIKey
 			}
 			if cfg.SessionHeaderKey == "" {
@@ -1566,12 +1623,12 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && !identityMode {
 		s.cfgMu.Lock()
 		cfg.APIKey = s.llmCfg.APIKey
 		s.cfgMu.Unlock()
 	}
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && !identityMode {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
 		return
 	}
