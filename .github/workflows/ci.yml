@@ -23,6 +23,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+
+      # 预构建（与 .forgejo/publish.sh 同口径）：web build → embed → go build 产 dist/amd64/artex
+      - name: web build
+        run: |
+          set -euo pipefail
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build:static
+          cd ..
+          rm -rf server/webui/dist && mkdir -p server/webui && cp -r web/out server/webui/dist
+          [ -f web/out/index.html ]
+      - name: go build
+        run: |
+          set -euo pipefail
+          mkdir -p dist/amd64
+          CGO_ENABLED=0 go build -trimpath -tags embedui -o dist/amd64/artex ./cmd/artex
+          [ -s dist/amd64/artex ]
+
       - name: 镜像元数据
         id: meta
         run: |
