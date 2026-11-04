@@ -9,7 +9,7 @@ import { Wallet } from "lucide-react";
 
 export function SidebarWalletBadge() {
   const [balance, setBalance] = React.useState<number | null>(null);
-  const [ok, setOk] = React.useState(false);
+  const [show, setShow] = React.useState(false);
 
   React.useEffect(() => {
     const identity = auth.getIdentityToken();
@@ -28,16 +28,19 @@ export function SidebarWalletBadge() {
         const body = await r.json().catch(() => ({}));
         if (!cancelled) {
           setBalance(typeof body.balance === "number" ? body.balance : 0);
-          setOk(true);
+          setShow(true);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // ensure 失败也显示入口（文案退化为「钱包」），详情进钱包页看
+        if (!cancelled) setShow(true);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (!ok) return null;
+  if (!show) return null;
   return (
     <Link
       prefetch={false}
@@ -46,7 +49,7 @@ export function SidebarWalletBadge() {
       title="KT AI 钱包余额，点击进入钱包页"
     >
       <Wallet className="size-3" />
-      ${balance?.toFixed(2)}
+      {balance === null ? "钱包" : `$${balance.toFixed(2)}`}
     </Link>
   );
 }
