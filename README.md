@@ -314,6 +314,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
+**Kito 统一 AI 钱包**（`/system/wallet`，kt-k8s#194）：余额 / 可用模型 / 充值地址由后端透传 ktapi.cc（NewAPI IAM），按登录用户的 KT Identity 令牌判定。环境变量 `KTAPI_BASE` 指定上游（默认 `https://ktapi.cc`）；无需额外密钥，但用户必须通过 KT Identity（Telegram 扫码）登录，账密登录用户没有 identity 令牌，钱包页会提示重新登录。充值地址只在用户打开充值弹窗并选定网络后才向上游获取。
+
 **常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
 
 ### 可选的 HTTP Basic Auth 访问验证
