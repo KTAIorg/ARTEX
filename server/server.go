@@ -1085,6 +1085,11 @@ func (s *Server) Handler() http.Handler {
 	// KT Identity 反代：浏览器同源访问 /identity/* 即 {IDENTITY_LOGIN_URL}/identity/*，免 CORS。
 	// 必须挂在顶层 mux（内层 mux 只在 /api/ 下生效），且长于 "/" 的模式会优先生效。
 	root.HandleFunc("/identity/", s.identityProxy)
+	// favicon 指纹治理（kt-vuln#61 A1）：FAVICON_B64 配本站专属图标，优先于内嵌前端产物。
+	if os.Getenv("FAVICON_B64") != "" {
+		root.HandleFunc("/favicon.ico", s.faviconOverride)
+		root.HandleFunc("/icon.png", s.faviconOverride)
+	}
 	root.Handle("/", s.webuiHandler())
 	return s.requireBasicAuth(root)
 }
