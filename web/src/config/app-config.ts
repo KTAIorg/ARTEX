@@ -3,7 +3,7 @@ import packageJson from "../../package.json";
 const currentYear = new Date().getFullYear();
 
 export const APP_CONFIG = {
-  name: "ARTEX",
+  name: "工作台",
   version: packageJson.version,
   copyright: `© ${currentYear}, KT.`,
   meta: {

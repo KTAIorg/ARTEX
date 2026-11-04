@@ -15,6 +15,8 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: APP_CONFIG.meta.title,
   description: APP_CONFIG.meta.description,
+  // issue #61 A6：公网站点不进入搜索引擎索引（robots.txt 之外的第二道）。
+  robots: { index: false, follow: false, nocache: true },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

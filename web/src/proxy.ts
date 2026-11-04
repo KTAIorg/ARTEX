@@ -53,7 +53,7 @@ export async function proxy(request: NextRequest) {
   };
 
   const { pathname } = request.nextUrl;
-  const token = request.cookies.get("artex_token")?.value;
+  const token = request.cookies.get("sid")?.value;
   const isAuthPage = AUTH_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
   // 未登录 → 跳转登录页
@@ -70,8 +70,10 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // 跳过 Next.js 内部路由、API 路由、favicon 及 public/ 下的静态文件（含图片、字体等）
+  // 跳过 Next.js 内部路由、API 路由、identity 反代、favicon 及 public/ 下的静态文件。
+  // /identity/* 必须放行：登录页未持令牌时就要用它拉起 Telegram challenge，
+  // 被 middleware 拦成 307 会让「快捷登录」在 dev 下永远显示「无法连接 KT Identity 服务」。
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|api/|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf)$).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|sitemap\\.xml|manifest\\.webmanifest|api/|identity/|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico|woff2?|ttf|otf)$).*)",
   ],
 };

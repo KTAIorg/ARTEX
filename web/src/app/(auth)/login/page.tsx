@@ -120,7 +120,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("ARTEX", password);
+      const { token } = await api.login("admin", password);
       // 账密登录 = 内网单管理员，与后端给该路径签发的 JWT roles 对齐。
       // 该路径没有 identity 令牌：清掉上一次 identity 登录可能残留的旧 token，
       // 避免 /api/vuln 代理继续透传已换人的用户令牌（审计归因错人）。
@@ -204,7 +204,7 @@ export default function LoginPage() {
             // setPhase("exchanging") 已触发本 effect cleanup（cancelled=true），
             // 但写 token/roles 与跳转不是 setState，必须无条件执行——guard 会把成功
             // 结果丢弃，页面将永远停在“正在登录…”。identity opaque token 同理：
-            // 不再用完即丢，P1 起留存（artex.identity_token），供 /api/vuln/* 用户
+            // 不再用完即丢，P1 起留存（idt），供 /api/vuln/* 用户
             // 令牌透传代理，登出时随 clearToken 一并清除。
             auth.setToken(token);
             auth.setRoles(roles);
@@ -270,7 +270,7 @@ export default function LoginPage() {
           <div className="absolute size-60 rounded-full border border-primary-foreground/15" />
           <div className="absolute size-40 rounded-full border border-primary-foreground/20" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="ARTEX" width={160} height={160} className="relative brightness-0 invert" />
+          <img src="/logo.png" alt="" aria-hidden="true" width={160} height={160} className="relative brightness-0 invert" />
         </div>
       </div>
 
@@ -284,13 +284,13 @@ export default function LoginPage() {
           <Card>
             <CardHeader>
               <CardTitle>密码登录</CardTitle>
-              <CardDescription>使用 ARTEX 内置账号密码继续</CardDescription>
+              <CardDescription>使用内置账号密码继续</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="username">用户名</Label>
-                  <Input id="username" value="ARTEX" readOnly className="bg-muted text-muted-foreground" />
+                  <Input id="username" value="admin" readOnly className="bg-muted text-muted-foreground" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="password">密码</Label>
@@ -422,7 +422,7 @@ export default function LoginPage() {
               <ShieldCheck className="size-5" />
             </div>
             <div className="space-y-0.5">
-              <DialogTitle className="text-base">ARTEX 使用须知与免责声明</DialogTitle>
+              <DialogTitle className="text-base">使用须知与免责声明</DialogTitle>
               <p className="text-xs text-muted-foreground">
                 版本 v1.0 · 生效日期 2026-09-18 · 请在登录前完整阅读以下全部条款
               </p>
@@ -435,7 +435,7 @@ export default function LoginPage() {
             className="max-h-[60vh] space-y-5 overflow-y-auto px-6 py-5 text-sm leading-relaxed text-muted-foreground"
           >
             <p className="rounded-lg border bg-muted/40 p-3 text-foreground/80">
-              本《使用须知与免责声明》（以下简称"本声明"）是您与 ARTEX
+              本《使用须知与免责声明》（以下简称"本声明"）是您与本软件
               项目作者及贡献者之间就使用本软件所达成的约定。请您在使用前审慎阅读、充分理解各条款内容，特别是以粗体或色块标注的免责、责任限制及禁止性条款。
               <span className="font-medium text-foreground">
                 {" "}
@@ -451,7 +451,7 @@ export default function LoginPage() {
                 第一条 · 定义与开源许可
               </h4>
               <p className="pl-7">
-                本软件（ARTEX）是一款基于 GNU Affero General Public License
+                本软件是一款基于 GNU Affero General Public License
                 v3.0（AGPL-3.0）发布的开源程序。您可依据该协议自由使用、复制、修改和分发本软件；但任何衍生作品（包括通过网络向第三方提供的在线服务）均须同样以
                 AGPL-3.0 协议开源并向使用者公开对应的完整源代码。AGPL-3.0 完整条款以随附的 LICENSE 文件为准。
               </p>

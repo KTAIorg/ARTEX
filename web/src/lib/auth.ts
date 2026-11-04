@@ -1,9 +1,9 @@
-const TOKEN_KEY = "artex_token";
-const ROLES_KEY = "artex_roles";
+const TOKEN_KEY = "sid";
+const ROLES_KEY = "roles";
 // KT Identity opaque token：登录换发时原样留存（P1 起不再用完即丢），供
 // /api/vuln/* 用户令牌透传代理——vuln 权限按用户判定、审计归因真实用户。
 // 只存 localStorage，不写 cookie（不参与服务端路由守卫）。
-const IDENTITY_TOKEN_KEY = "artex.identity_token";
+const IDENTITY_TOKEN_KEY = "idt";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
 
 export interface CurrentUser {
@@ -79,7 +79,7 @@ export const auth = {
       if (parts.length !== 3) return null;
       // base64url → base64
       const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-      const username: string = payload.sub ?? "ARTEX";
+      const username: string = payload.sub ?? "admin";
       return { id: "1", name: username, username, email: "", avatar: "", role: "operator" };
     } catch {
       return null;

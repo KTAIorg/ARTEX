@@ -55,11 +55,13 @@ var vulnReverseProxy = &httputil.ReverseProxy{
 		req.URL.Path = "/api/" + strings.TrimPrefix(req.URL.Path, "/api/vuln/")
 	},
 	Transport: vulnProxyTransport,
-	// 上游 401 = 用户 identity 令牌过期/失效：状态码与 body 仍原样透传，只附加
-	// 一个响应头，方便前端识别需要重新走 identity 登录。
+	// 上游 401 不再一律标记成「identity 过期」：
+	// 401 既可能是令牌失效，也可能是「这个账号在目标环境没有权限」。前者该清令牌重登，
+	// 后者清了也没用，还会把用户踢出登录页、看不到真正原因。这里只在**上游自己**
+	// 明确给出过期信号时才透传该头；其余 401 原样返回，由前端展示上游错误。
 	ModifyResponse: func(resp *http.Response) error {
-		if resp.StatusCode == http.StatusUnauthorized {
-			resp.Header.Set("X-Identity-Expired", "true")
+		if resp.StatusCode == http.StatusUnauthorized && resp.Header.Get("X-Identity-Expired") == "" {
+			resp.Header.Del("X-Identity-Expired")
 		}
 		return nil
 	},
