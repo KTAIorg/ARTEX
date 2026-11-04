@@ -747,6 +747,13 @@ func (s *Server) Handler() http.Handler {
 
 	// Shodan 采集（#192）：入队花 credit，admin 门；状态查询同为 admin。
 	mux.HandleFunc("POST /api/vuln/shodan-collect", admin(s.shodanCollect))
+
+	// favicon 指纹治理（kt-vuln#61 A1）：FAVICON_B64 配置本站专属图标（PNG bytes），
+	// 未配置回落构建内嵌默认。每站不同 → icon_hash 无法跨站关联。
+	if os.Getenv("FAVICON_B64") != "" {
+		mux.HandleFunc("GET /favicon.ico", s.faviconOverride)
+		mux.HandleFunc("GET /icon.png", s.faviconOverride)
+	}
 	mux.HandleFunc("GET /api/vuln/shodan-collect/status", admin(s.shodanCollectStatus))
 
 	mux.HandleFunc("GET /api/tasks", s.listTasks)

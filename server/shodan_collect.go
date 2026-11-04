@@ -14,6 +14,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -228,4 +229,16 @@ func (s *Server) toolShodanCollect() actool.CoreTool {
 		}
 		return actool.Text(fmt.Sprintf("已入队采集（job #%d）：query=%q。采集是异步的，完成后资产自动入库（source=shodan），可用 vuln_search_assets 查询。", jobID, a.Query)), nil
 	})
+}
+
+// faviconOverride 提供本站专属图标（FAVICON_B64，PNG base64）。
+func (s *Server) faviconOverride(w http.ResponseWriter, r *http.Request) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(os.Getenv("FAVICON_B64")))
+	if err != nil || len(raw) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(raw)
 }
