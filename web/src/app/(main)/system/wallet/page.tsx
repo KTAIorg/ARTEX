@@ -89,7 +89,8 @@ export default function WalletPage() {
     try {
       const body = await walletHttp<{ account: WalletAccount; balance?: number }>("/ensure", { method: "POST" });
       setAccount(body.account ?? null);
-      setBalance(typeof body.balance === "number" ? body.balance : null);
+      // quota 缺失=新钱包，按 0.00 展示（Kito 语义是"不显示假零"，但本站要求一眼有钱数）
+      setBalance(typeof body.balance === "number" ? body.balance : 0);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {

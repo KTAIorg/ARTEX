@@ -22,6 +22,7 @@ import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 import { NavMain } from "./nav-main";
 import { NavUser } from "./nav-user";
 import { SidebarSupportCard } from "./sidebar-support-card";
+import { SidebarWalletBadge } from "./wallet-badge";
 
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -56,6 +57,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/logo.png" alt="" aria-hidden="true" width={40} height={40} className="shrink-0" />
                 <span className="font-semibold text-base">{APP_CONFIG.name}</span>
+                <SidebarWalletBadge />
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

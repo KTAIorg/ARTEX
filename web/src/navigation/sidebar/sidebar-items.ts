@@ -23,7 +23,6 @@ import {
   Sparkles,
   Target,
   Terminal,
-  Wallet,
   Wrench,
 } from "lucide-react";
 
@@ -92,9 +91,7 @@ export const sidebarItems: NavGroup[] = [
     id: 2,
     label: "系统",
     // 各 item 单独标 roles:["admin"]（对应后端 requireRole("admin")，隐藏不替代 403）：
-    // 组级不能整组 admin——「AI 钱包」走 /api/wallet/* 普通登录用户即可用。
     items: [
-      { id: "wallet", title: "AI 钱包", url: "/system/wallet", icon: Wallet },
       { id: "members", title: "成员与角色", url: "/system/members", icon: Users, roles: ["admin"] },
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain, roles: ["admin"] },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot, roles: ["admin"] },
