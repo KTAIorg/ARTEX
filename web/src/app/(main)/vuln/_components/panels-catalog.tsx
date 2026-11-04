@@ -12,7 +12,7 @@
 
 import * as React from "react";
 
-import { ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, EyeIcon, SearchIcon } from "lucide-react";
+import { ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, EyeIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { PAGE_SIZES } from "@/components/asset-card";
@@ -26,9 +26,9 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { SortableHead } from "@/components/ui/sortable-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
-import { type VulnCveCatalogItem, vuln } from "@/lib/vuln";
+import { type VulnCve, type VulnCveCatalogItem, vuln } from "@/lib/vuln";
 
-import { cveEmptyMessage, VulnSeverityBadge } from "./panels";
+import { cveEmptyMessage, VulnCollectDialog, VulnSeverityBadge } from "./panels";
 
 // 服务端支持的三档排序（kt-vuln ListCveCatalog: severity | published | cve_id）。
 type CatalogSortField = "published" | "severity" | "cve_id" | "epss" | "risk";
@@ -110,6 +110,38 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
   const [years, setYears] = React.useState<{ year: number; count: number }[]>([]);
   const [detail, setDetail] = React.useState<VulnCveCatalogItem | null>(null);
   const [sort, setSort] = useStoredSortPreference<CatalogSortField>(SORT_STORAGE_KEY, SORT_FIELDS, "published", "desc");
+  // Shodan 采集（上游 #192）：目录本身没有影响组件元数据，查询体由用户在弹窗里手填。
+  const [collecting, setCollecting] = React.useState(false);
+  const [collectTarget, setCollectTarget] = React.useState<{ cve: VulnCve; query: string } | null>(null);
+
+  const submitCollect = async () => {
+    if (!collectTarget) return;
+    const query = collectTarget.query.trim();
+    if (!query) {
+      toast.error('请填写 Shodan 查询体，如 "log4j country:CN"');
+      return;
+    }
+    setCollecting(true);
+    try {
+      const resp = await fetch("/api/vuln/shodan-collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, cve_id: collectTarget.cve.cve_id, max_pages: 5 }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        toast.error(String(data?.error ?? `入队失败（HTTP ${resp.status}）`));
+        return;
+      }
+      toast.success(`已入队采集（job #${data.job_id}）：${query}，完成后资产自动入库`);
+      setCollectTarget(null);
+    } catch (e) {
+      toast.error(`采集入队失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
   const reqRef = React.useRef(0);
 
   // 年份桶懒加载一次（下拉数据源）；失败不阻塞主列表，仅少一个筛选项。
@@ -545,6 +577,18 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
                         variant="ghost"
                         size="icon"
                         className="size-7"
+                        title="从 Shodan 采集该 CVE 的暴露资产"
+                        aria-label={`从 Shodan 采集 ${c.cve_id}`}
+                        onClick={() =>
+                          setCollectTarget({ cve: { cve_id: c.cve_id, title: c.title ?? "" } as VulnCve, query: "" })
+                        }
+                      >
+                        <DownloadIcon className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
                         onClick={() => setDetail(c)}
                         aria-label={`查看 ${c.cve_id} 详情`}
                       >
@@ -735,6 +779,14 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
           ) : null}
         </SheetContent>
       </Sheet>
+
+      <VulnCollectDialog
+        target={collectTarget}
+        busy={collecting}
+        onQueryChange={(q) => setCollectTarget((t) => (t ? { ...t, query: q } : t))}
+        onClose={() => setCollectTarget(null)}
+        onSubmit={submitCollect}
+      />
     </div>
   );
 }

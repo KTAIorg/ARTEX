@@ -27,6 +27,10 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolVulnListCves(),
 		s.toolVulnSearchAssets(),
 		s.toolVulnCveDetail(),
+		s.toolExpListMatching(),
+		s.toolVulnEnrichCve(),
+		s.toolShodanCollect(),
+		s.toolQueryCveCatalog(),
 	}
 }
 
@@ -36,7 +40,8 @@ var platformToolKeys = []string{
 	"create_custom_tool", "update_custom_tool",
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
-	"vuln_list_cves", "vuln_search_assets", "vuln_cve_detail",
+	"vuln_list_cves", "vuln_search_assets", "vuln_cve_detail", "vuln_enrich_cve",
+	"exp_list_matching", "shodan_collect", "query_cve_catalog",
 }
 
 // ---- assets ----

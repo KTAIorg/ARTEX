@@ -1,0 +1,51 @@
+# ARTEX 灰度（canary）部署——搬瓦工 VPS 单机形态
+#
+# 用途：在不动生产实例的前提下，让 KT Identity 内部用户先体验新版本。
+#   - 独立 compose 项目（-p artex-canary），与生产 artex 容器、VPS 上其他服务互不干扰
+#   - 独立 PostgreSQL（artex_canary 库）：新版启动即幂等迁移 schema，先隔离验证
+#   - 独立数据目录 ./data-canary（jwt key、SQLite 等），./skills 只读共享生产那份
+#   - 镜像拉 test 通道：oci.ktyun.cc/ktaiorg/artex:test-sha-<sha>
+#
+# 启动：
+#   ARTEX_CANARY_TAG=test-sha-<sha12> docker compose -p artex-canary -f deploy/canary/docker-compose.canary.yml up -d
+# 验证：
+#   curl http://127.0.0.1:8789/api/health   # version 应为 test-sha 对应版本
+# 晋升（灰度验证通过后，在生产 compose 里换镜像 tag 并 up -d，见 README）
+# 回滚：
+#   docker compose -p artex-canary down && rm -rf data-canary   # 整个灰度环境可弃
+
+services:
+  canary-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: artex
+      POSTGRES_PASSWORD: ${ARTEX_CANARY_PG_PASSWORD:?请在环境变量设置 ARTEX_CANARY_PG_PASSWORD}
+      POSTGRES_DB: artex_canary
+    volumes:
+      - ./canary-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artex -d artex_canary"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  artex-canary:
+    # test 通道镜像（CI 由 push 到 ARTEX 仓 test 分支触发，publish.sh 出 test-sha-*）
+    image: oci.ktyun.cc/ktaiorg/artex:${ARTEX_CANARY_TAG:?请设置 ARTEX_CANARY_TAG=test-sha-<sha12>}
+    depends_on:
+      canary-postgres:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      ARTEX_PG_DSN: postgres://artex:${ARTEX_CANARY_PG_PASSWORD}@canary-postgres:5432/artex_canary?sslmode=disable
+      # KT Identity 登录与生产同源（换发模式）；灰度实例只影响体验它的用户
+      IDENTITY_LOGIN_URL: ${IDENTITY_LOGIN_URL:-https://login.ktyun.cc}
+    ports:
+      # 只绑本机回环，外部经 CF Tunnel / 反代进入；直试可临时改 "8789:8787"
+      - "127.0.0.1:8789:8787"
+    volumes:
+      - ./data-canary:/app/data
+      # skills 与生产共享一份（只读语义：容器内按需读取）
+      - ../skills:/app/skills:ro
+    restart: unless-stopped

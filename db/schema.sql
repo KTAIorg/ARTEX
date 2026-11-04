@@ -1643,4 +1643,98 @@ CREATE TABLE IF NOT EXISTS task_vuln_worksets (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(task_id, vuln_asset_id)
 );
+
+-- CVE 情报富化缓存（vuln_enrich_cve 工具）：聚合 kt-vuln/NVD/GitHub Advisory/EPSS 的
+-- 标准化结果按 CVE 编号落一份快照，TTL 内重复查询直接回缓存，避免反复打外部
+-- 限流接口（NVD 匿名 5req/30s）。payload 为工具输出的完整 JSON；expires_at 过期后
+-- 读取路径懒删除（GetCVEEnrichCache），无需后台清理任务。
+CREATE TABLE IF NOT EXISTS cve_enrich_cache (
+    cve_id     TEXT PRIMARY KEY,
+    payload    JSONB NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cve_enrich_cache_expiry ON cve_enrich_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_task_vuln_worksets_task ON task_vuln_worksets(task_id, id);
+
+-- =====================================================================
+-- N. EXP 资产库（复利引擎）
+--
+-- 授权渗透测试平台的能力沉淀库：每次成功利用沉淀为一条参数化 EXP，
+-- agent 猎杀一次、全平台永久收割同类目标；失败也结构化沉淀，反哺
+-- 匹配准确度。EXP 只在授权范围内使用（任务/目标的授权边界由拦截与
+-- 任务 scope 层把关，本表只做能力沉淀，不做放行判定）。
+--
+--   exp_assets   参数化 EXP 资产（指纹条件 + 前置条件 + 参数模板 +
+--                执行模板 + 成功判定 + 清理动作）
+--   exp_attempts 执行尝试台账（成功与失败都记；失败必须带结构化
+--                failure_reason，对应成功率先验公式里可归因的因子）
+--
+-- down/清理路径（本仓库迁移为幂等加列式，无自动 down；回滚时人工执行）：
+--   DROP TABLE IF EXISTS exp_attempts;
+--   DROP TABLE IF EXISTS exp_assets;
+-- =====================================================================
+
+-- 一条 EXP = 「什么目标(指纹) + 需要什么(前置) + 怎么打(执行模板) +
+-- 怎么确认拿下(成功判定) + 怎么收拾(清理)」。字段语义见 docs/EXP资产库设计.md：
+--   fingerprint_match  指纹条件 JSON：{"components":[{"name":"...","version_range":">=1.0,<2.0"}],"ports":[...],"paths":[...]}
+--   preconditions      前置条件 JSON 数组（EXP 执行前必须满足的事实，如可写目录/认证凭据）
+--   params_schema      参数模板 JSON Schema（占位符 {target}/{port} 等的契约）
+--   exec_template      执行模板 JSON：{"kind":"http",...} 或 {"kind":"command",...}，
+--                      与自定义工具 exec 规格同构，后续执行器可直接复用
+--   success_oracle     成功判定 JSON：{"status_codes":[200],"keywords":["root:"],"regex":"..."}
+--   cleanup            清理动作 JSON，可空（不留垃圾是授权测试的纪律）
+CREATE TABLE IF NOT EXISTS exp_assets (
+    id                BIGSERIAL PRIMARY KEY,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT NOT NULL DEFAULT '',
+    fingerprint_match JSONB NOT NULL DEFAULT '{}',
+    preconditions     JSONB NOT NULL DEFAULT '[]',
+    params_schema     JSONB NOT NULL DEFAULT '{}',
+    exec_template     JSONB NOT NULL DEFAULT '{}',
+    success_oracle    JSONB NOT NULL DEFAULT '{}',
+    cleanup           JSONB,
+    cve_ids           TEXT[] NOT NULL DEFAULT '{}',
+    tags              TEXT[] NOT NULL DEFAULT '{}',
+    enabled           BOOLEAN NOT NULL DEFAULT true,
+    -- 每次内容更新 +1：并发编辑时的乐观锁水位，也是「这条 EXP 被迭代过几版」的复利计数
+    version           INTEGER NOT NULL DEFAULT 1,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_exp_assets_upd ON exp_assets;
+CREATE TRIGGER trg_exp_assets_upd BEFORE UPDATE ON exp_assets
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE INDEX IF NOT EXISTS idx_exp_assets_tags ON exp_assets USING gin(tags);
+CREATE INDEX IF NOT EXISTS idx_exp_assets_enabled ON exp_assets(id) WHERE enabled;
+
+-- 执行尝试台账：成功与失败都记。failure_reason 是闭合枚举，CHECK 收口——
+-- 它是失败沉淀的结构化口径（喂给命中率统计与匹配修正），脏值会污染整个统计面。
+--   fingerprint_mismatch 指纹不匹配（组件对不上）
+--   version_mismatch     版本不在 EXP 声明区间
+--   precondition_missing 前置条件不满足
+--   timeout              执行超时
+--   oracle_not_matched   执行完成但成功判定未命中（EXP 可能坏了，需要迭代）
+--   other                其他（detail 里写清）
+CREATE TABLE IF NOT EXISTS exp_attempts (
+    id             BIGSERIAL PRIMARY KEY,
+    exp_id         BIGINT NOT NULL REFERENCES exp_assets(id) ON DELETE CASCADE,
+    -- 资产标识：host[:port] 或 URL，人类可读、能回查
+    target         TEXT NOT NULL,
+    -- success | failed
+    status         TEXT NOT NULL CHECK (status IN ('success','failed')),
+    failure_reason TEXT CHECK (failure_reason IN (
+                       'fingerprint_mismatch','version_mismatch','precondition_missing',
+                       'timeout','oracle_not_matched','other'
+                   )),
+    detail         TEXT NOT NULL DEFAULT '',
+    -- 证据快照 JSON：请求/响应摘要、判定命中的关键字等（引用 evidence 体系时存引用）
+    evidence       JSONB NOT NULL DEFAULT '{}',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 失败必须归因，成功不允许携带 failure_reason
+    CHECK ((status = 'failed' AND failure_reason IS NOT NULL)
+        OR (status = 'success' AND failure_reason IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_exp_attempts_exp ON exp_attempts(exp_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exp_attempts_status ON exp_attempts(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exp_attempts_target ON exp_attempts(target);

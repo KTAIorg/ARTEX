@@ -604,6 +604,42 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
   const [kevOnly, setKevOnly] = React.useState(false);
   const [category, setCategory] = React.useState("all");
   const [drill, setDrill] = React.useState<VulnCve | null>(null);
+  // Shodan 采集（#192）：弹窗确认查询后入队（无影响组件也可手填），admin 才能成功。
+  const [collecting, setCollecting] = React.useState<string>("");
+  const [collectTarget, setCollectTarget] = React.useState<{ cve: VulnCve; query: string } | null>(null);
+
+  const collectCve = async (c: VulnCve, affected: [string, string[]][]) => {
+    const product = affected.length > 0 ? affected[0][0].trim().toLowerCase() : "";
+    setCollectTarget({ cve: c, query: product ? `${product} country:CN` : "" });
+  };
+
+  const submitCollect = async () => {
+    if (!collectTarget) return;
+    const query = collectTarget.query.trim();
+    if (!query) {
+      toast.error("请填写 Shodan 查询体，如 \"log4j country:CN\"");
+      return;
+    }
+    setCollecting(collectTarget.cve.cve_id);
+    try {
+      const resp = await fetch("/api/vuln/shodan-collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, cve_id: collectTarget.cve.cve_id, max_pages: 5 }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        toast.error(String(data?.error ?? `入队失败（HTTP ${resp.status}）`));
+        return;
+      }
+      toast.success(`已入队采集（job #${data.job_id}）：${query}，完成后资产自动入库`);
+      setCollectTarget(null);
+    } catch (e) {
+      toast.error(`采集入队失败：${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setCollecting("");
+    }
+  };
   const reqRef = React.useRef(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey 是外部「刷新」按钮的显式重载触发器。
@@ -753,9 +789,20 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
                       <VulnSurfaceCounts surface={c.surface} />
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="outline" size="sm" className="h-7" onClick={() => setDrill(c)}>
-                        查看资产
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => collectCve(c, affected)}
+                          title="按影响组件构造 Shodan 查询（可修改），入队后自动采集入库"
+                        >
+                          采集
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-7" onClick={() => setDrill(c)}>
+                          查看资产
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -771,7 +818,106 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
           </Table>
         </div>
       </Card>
+
+      <VulnCollectDialog
+        target={collectTarget}
+        busy={collecting !== ""}
+        onQueryChange={(q) => setCollectTarget((t) => (t ? { ...t, query: q } : t))}
+        onClose={() => setCollectTarget(null)}
+        onSubmit={submitCollect}
+      />
     </div>
+  );
+}
+
+
+
+// 采集弹窗快捷国家（mmh3 指纹之外最常见的筛选维度）。
+const VULN_COLLECT_COUNTRIES: [string, string][] = [
+  ["CN", "中国"], ["US", "美国"], ["JP", "日本"], ["DE", "德国"],
+  ["SG", "新加坡"], ["KR", "韩国"], ["HK", "香港"], ["TW", "台湾"], ["ALL", "全部"],
+];
+
+// applyCountryFilter 设置/移除查询体里的 country:XX（ALL 表示去掉国家限制）。
+function applyCountryFilter(query: string, code: string | null): string {
+  const base = query.replace(/\s*country:[A-Za-z]{2}/g, "").trim();
+  if (!code || code === "ALL") return base;
+  return base ? `${base} country:${code}` : `country:${code}`;
+}
+
+// VulnCollectDialog Shodan 采集确认弹窗（关注清单/全量目录共用）：查询可编辑，
+// 无影响组件预填时手填。入队与错误反馈由调用方 submitCollect 完成。
+export function VulnCollectDialog({
+  target,
+  busy,
+  onQueryChange,
+  onClose,
+  onSubmit,
+}: {
+  target: { cve: VulnCve; query: string } | null;
+  busy: boolean;
+  onQueryChange: (q: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <Dialog open={target !== null} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>从 Shodan 采集{target ? ` · ${target.cve.cve_id}` : ""}</DialogTitle>
+          <DialogDescription>
+            按 Shodan 查询体采集互联网暴露资产并自动入库（每页 100 条、1 credit，默认 5 页）。
+            同一查询的未完成任务会幂等合并，不重复扣费。
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel>国家/地区（快捷）</FieldLabel>
+            <div className="flex flex-wrap gap-1.5">
+              {VULN_COLLECT_COUNTRIES.map(([code, label]) => {
+                const cur = (target?.query.match(/country:([A-Z]{2})/i) || [])[1]?.toUpperCase();
+                const active = cur === code;
+                return (
+                  <Button
+                    key={code}
+                    type="button"
+                    variant={active ? "default" : "outline"}
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() =>
+                      onQueryChange(applyCountryFilter(target?.query ?? "", active ? null : code))
+                    }
+                  >
+                    {label}
+                  </Button>
+                );
+              })}
+            </div>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="shodan-collect-query">Shodan 查询体</FieldLabel>
+            <Input
+              id="shodan-collect-query"
+              autoFocus
+              placeholder='如 "log4j country:CN"'
+              value={target?.query ?? ""}
+              onChange={(e) => onQueryChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onSubmit();
+              }}
+            />
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button size="sm" disabled={busy} onClick={onSubmit}>
+            {busy ? "入队中…" : "入队采集"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

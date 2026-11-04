@@ -745,6 +745,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/rollback", admin(s.updateRollback))
 	mux.HandleFunc("GET /api/update/stream", s.updateStream)
 
+	// Shodan 采集（#192）：入队花 credit，admin 门；状态查询同为 admin。
+	mux.HandleFunc("POST /api/vuln/shodan-collect", admin(s.shodanCollect))
+
+	// favicon 指纹治理（kt-vuln#61 A1）：FAVICON_B64 配置本站专属图标（PNG bytes），
+	// 未配置回落构建内嵌默认。每站不同 → icon_hash 无法跨站关联。
+	if os.Getenv("FAVICON_B64") != "" {
+		mux.HandleFunc("GET /favicon.ico", s.faviconOverride)
+		mux.HandleFunc("GET /icon.png", s.faviconOverride)
+	}
+	mux.HandleFunc("GET /api/vuln/shodan-collect/status", admin(s.shodanCollectStatus))
+
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
@@ -1074,6 +1085,11 @@ func (s *Server) Handler() http.Handler {
 	// KT Identity 反代：浏览器同源访问 /identity/* 即 {IDENTITY_LOGIN_URL}/identity/*，免 CORS。
 	// 必须挂在顶层 mux（内层 mux 只在 /api/ 下生效），且长于 "/" 的模式会优先生效。
 	root.HandleFunc("/identity/", s.identityProxy)
+	// favicon 指纹治理（kt-vuln#61 A1）：FAVICON_B64 配本站专属图标，优先于内嵌前端产物。
+	if os.Getenv("FAVICON_B64") != "" {
+		root.HandleFunc("/favicon.ico", s.faviconOverride)
+		root.HandleFunc("/icon.png", s.faviconOverride)
+	}
 	root.Handle("/", s.webuiHandler())
 	return s.requireBasicAuth(root)
 }
