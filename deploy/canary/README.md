@@ -7,7 +7,7 @@
 ## 通道模型
 
 ```
-GitHub KTAIorg/ARTEX
+GitHub kt-security/ARTEX
   ├─ push main ──► ci.ktyun.cc 构建 ──► oci.ktyun.cc/ktaiorg/artex:prod-sha-<sha>  （生产实例用，现状不变）
   └─ push test ──► ci.ktyun.cc 构建 ──► oci.ktyun.cc/ktaiorg/artex:test-sha-<sha>  （灰度实例用，新增）
 ```
