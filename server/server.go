@@ -1012,6 +1012,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sync/scopesentry/projects", s.syncSSProjects)
 	mux.HandleFunc("GET /api/sync/scopesentry/tasks", s.syncSSTasks)
 	mux.HandleFunc("POST /api/sync/scopesentry/sync", admin(s.syncSSRun))
+	// Kito 统一 AI 钱包（kt-k8s#194）：ktapi.cc 透传（kitowallet.go）。普通登录
+	// 用户即可（不加 admin 门）；用户 identity 令牌同样从 X-Identity-Token 取。
+	mux.HandleFunc("POST /api/wallet/ensure", s.walletEnsure)
+	mux.HandleFunc("GET /api/wallet/models", s.walletModels)
+	mux.HandleFunc("GET /api/wallet/deposit-address", s.walletDepositAddress)
 	// kt-vuln 用户令牌透传代理：/api/vuln/* → {VULN_PROXY_TARGET}/api/*（vulnproxy.go）。
 	// 挂在 /api/ 下天然过 requireAuth；用户 identity 令牌从 X-Identity-Token 取。
 	mux.HandleFunc("/api/vuln/", s.vulnProxy)

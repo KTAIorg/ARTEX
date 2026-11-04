@@ -23,6 +23,7 @@ import {
   Sparkles,
   Target,
   Terminal,
+  Wallet,
   Wrench,
 } from "lucide-react";
 
@@ -90,21 +91,22 @@ export const sidebarItems: NavGroup[] = [
   {
     id: 2,
     label: "系统",
-    // 管理面整组仅 admin 可见；对应后端 requireRole("admin")，隐藏不替代 403。
-    roles: ["admin"],
+    // 各 item 单独标 roles:["admin"]（对应后端 requireRole("admin")，隐藏不替代 403）：
+    // 组级不能整组 admin——「AI 钱包」走 /api/wallet/* 普通登录用户即可用。
     items: [
-      { id: "members", title: "成员与角色", url: "/system/members", icon: Users },
-      { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
-      { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
-      { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
-      { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles },
-      { id: "tools", title: "工具", url: "/system/tools", icon: Wrench },
-      { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing },
-      { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert },
-      { id: "asset-intercept", title: "资产拦截", url: "/system/intercept/assets", icon: Ban },
-      { id: "approvals", title: "审批记录", url: "/system/intercept/approvals", icon: ClipboardList },
-      { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText },
-      { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2 },
+      { id: "wallet", title: "AI 钱包", url: "/system/wallet", icon: Wallet },
+      { id: "members", title: "成员与角色", url: "/system/members", icon: Users, roles: ["admin"] },
+      { id: "llm", title: "LLM", url: "/system/llm", icon: Brain, roles: ["admin"] },
+      { id: "agents", title: "Agent", url: "/system/agents", icon: Bot, roles: ["admin"] },
+      { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug, roles: ["admin"] },
+      { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles, roles: ["admin"] },
+      { id: "tools", title: "工具", url: "/system/tools", icon: Wrench, roles: ["admin"] },
+      { id: "notify", title: "通知推送", url: "/system/notify", icon: BellRing, roles: ["admin"] },
+      { id: "intercept", title: "拦截规则", url: "/system/intercept", icon: ShieldAlert, roles: ["admin"] },
+      { id: "asset-intercept", title: "资产拦截", url: "/system/intercept/assets", icon: Ban, roles: ["admin"] },
+      { id: "approvals", title: "审批记录", url: "/system/intercept/approvals", icon: ClipboardList, roles: ["admin"] },
+      { id: "logs", title: "日志", url: "/system/logs", icon: ScrollText, roles: ["admin"] },
+      { id: "settings", title: "系统配置", url: "/system/settings", icon: Settings2, roles: ["admin"] },
     ],
   },
   {
