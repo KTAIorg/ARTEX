@@ -30,6 +30,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolExpListMatching(),
 		s.toolVulnEnrichCve(),
 		s.toolShodanCollect(),
+		s.toolQueryCveCatalog(),
 	}
 }
 
@@ -40,7 +41,7 @@ var platformToolKeys = []string{
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
 	"vuln_list_cves", "vuln_search_assets", "vuln_cve_detail", "vuln_enrich_cve",
-	"exp_list_matching", "shodan_collect",
+	"exp_list_matching", "shodan_collect", "query_cve_catalog",
 }
 
 // ---- assets ----

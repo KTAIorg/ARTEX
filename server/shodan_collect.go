@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -241,4 +243,89 @@ func (s *Server) faviconOverride(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Write(raw)
+}
+
+// toolQueryCveCatalog query_cve_catalog（#61 D3）：自然语言→结构化筛选的全量目录查询工具。
+func (s *Server) toolQueryCveCatalog() actool.CoreTool {
+	desc := "查询 kt-vuln 全量 CVE 目录（28 万+ 条 NVD 字典），支持组合筛选与排序。\n" +
+		"参数示例：「2025 年以来 CVSS≥9 的 Apache 漏洞」→ published_from=2025-01-01, severity_min=9, vendor=apache。\n" +
+		"sort: severity|published|cve_id|epss|risk（risk=KEV→EPSS→CVSS→时间 组合优先）；order: desc|asc。只读，实时查询不落副本。"
+	schema := objSchema(map[string]any{
+		"q":              strParam("关键词（匹配 cve_id/标题模糊）"),
+		"published_from": strParam("发布日期起（YYYY-MM-DD，含）"),
+		"published_to":   strParam("发布日期止（YYYY-MM-DD，含）"),
+		"severity_min":   map[string]any{"type": "number", "description": "CVSS 下限 0-10"},
+		"severity_max":   map[string]any{"type": "number", "description": "CVSS 上限 0-10"},
+		"vendor":         strParam("厂商（精确匹配，NVD CPE 解析回填）"),
+		"product":        strParam("产品（精确匹配）"),
+		"cwe":            strParam("弱点类型，如 CWE-89"),
+		"year":           map[string]any{"type": "integer", "description": "发布年份"},
+		"sort":           map[string]any{"type": "string", "enum": []string{"severity", "published", "cve_id", "epss", "risk"}},
+		"order":          map[string]any{"type": "string", "enum": []string{"desc", "asc"}},
+		"page":           map[string]any{"type": "integer", "description": "页码，默认 1"},
+		"page_size":      map[string]any{"type": "integer", "description": "每页条数，默认 20、上限 200"},
+	})
+	return roTool("query_cve_catalog", desc, schema, func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
+		var a struct {
+			Q             string   `json:"q"`
+			PublishedFrom string   `json:"published_from"`
+			PublishedTo   string   `json:"published_to"`
+			SeverityMin   *float64 `json:"severity_min"`
+			SeverityMax   *float64 `json:"severity_max"`
+			Vendor        string   `json:"vendor"`
+			Product       string   `json:"product"`
+			Cwe           string   `json:"cwe"`
+			Year          int      `json:"year"`
+			Sort          string   `json:"sort"`
+			Order         string   `json:"order"`
+			Page          int      `json:"page"`
+			PageSize      int      `json:"page_size"`
+		}
+		_ = json.Unmarshal(in, &a)
+		q := url.Values{}
+		set := func(k, v string) {
+			if v != "" {
+				q.Set(k, v)
+			}
+		}
+		set("q", strings.TrimSpace(a.Q))
+		set("published_from", a.PublishedFrom)
+		set("published_to", a.PublishedTo)
+		if a.SeverityMin != nil {
+			q.Set("severity_min", strconv.FormatFloat(*a.SeverityMin, 'f', -1, 64))
+		}
+		if a.SeverityMax != nil {
+			q.Set("severity_max", strconv.FormatFloat(*a.SeverityMax, 'f', -1, 64))
+		}
+		set("vendor", strings.TrimSpace(a.Vendor))
+		set("product", strings.TrimSpace(a.Product))
+		set("cwe", strings.ToUpper(strings.TrimSpace(a.Cwe)))
+		if a.Year > 0 {
+			q.Set("year", strconv.Itoa(a.Year))
+		}
+		set("sort", a.Sort)
+		set("order", a.Order)
+		if a.Page < 1 {
+			a.Page = 1
+		}
+		if a.PageSize < 1 {
+			a.PageSize = 20
+		}
+		if a.PageSize > 200 {
+			a.PageSize = 200
+		}
+		q.Set("page", strconv.Itoa(a.Page))
+		q.Set("page_size", strconv.Itoa(a.PageSize))
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		var resp struct {
+			Items []map[string]any `json:"items"`
+			Total int64            `json:"total"`
+		}
+		if err := vulnGet(cctx, "/api/cve-catalog", q, &resp); err != nil {
+			return actool.Result{}, err
+		}
+		b, _ := json.MarshalIndent(map[string]any{"total": resp.Total, "page": a.Page, "items": resp.Items}, "", " ")
+		return actool.Text(string(b)), nil
+	})
 }
