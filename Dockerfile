@@ -26,14 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
 # 再装 playwright（提供浏览器管理），装完用 --with-deps 预置 chromium 及其系统依赖，
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。
-# 拆成三个独立层，单层 <100MB：oci.ktyun.cc 经 Cloudflare 代理，
-# 免费套餐单请求上限 100MB，整层合并推送会被 413 拒掉（GitHub Actions 公网推镜像时）。
+# Playwright 全家（npm 包 + chromium + 系统依赖 ~450MB）不再打进镜像：
+# oci.ktyun.cc 经 Cloudflare 代理，免费套餐单请求 100MB 上限，大层推送必 413。
+# 改为 start.sh 启动后后台自装（不影响 artex 本体启动与健康检查），已装过则跳过。
 RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
     && playwright-cli --help
-RUN playwright install-deps chromium \
-    && rm -rf /var/lib/apt/lists/*
-# 只装 headless shell（~95MB）：MCP/CLI 无头场景够用，完整浏览器留给运行时按需补装。
-RUN playwright install chromium --only-shell
 WORKDIR /app
 ENV TZ=Asia/Shanghai
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）

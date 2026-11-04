@@ -20,6 +20,16 @@ set -u
 
 cd "$(dirname "$0")" || exit 1
 
+# Playwright 浏览器后台自装（首次启动）：不阻塞 artex 本体；已装过（标记文件）则跳过。
+# 幂等标记放 data 卷，重建容器不重装。
+(
+  if [ ! -f ./data/.pw-browsers-ok ]; then
+    playwright install chromium --only-shell \
+      && playwright install-deps chromium \
+      && touch ./data/.pw-browsers-ok
+  fi
+) >/dev/null 2>&1 &
+
 BIN=./artex
 [ -x "$BIN" ] || { echo "[artex] 找不到可执行文件 $BIN" >&2; exit 1; }
 
