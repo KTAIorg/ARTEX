@@ -1139,6 +1139,20 @@ export interface LLMProfile {
   session_header_key?: string;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
+  // static=传统 API Key；identity=KT 身份直连（零模型 Key）。
+  auth_mode?: "static" | "identity";
+  identity_id?: number;
+}
+
+// KT 机器身份。client_secret 只在创建/轮换时由管理员提交，读取只返回尾 4 位 hint。
+export interface LLMIdentity {
+  id: number;
+  name: string;
+  token_url: string;
+  client_id: string;
+  client_secret_hint?: string;
+  scope?: string;
+  managed_token_name: string;
 }
 
 // ---- LLM 重试策略 ----

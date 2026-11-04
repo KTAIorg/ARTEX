@@ -641,6 +641,11 @@ type LLMProfileDTO struct {
 	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
 	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
 	Retry db.RetryOverride `json:"retry"`
+	// 认证模式：''/static=api_key（默认）| identity=KT 身份直连（零模型 Key，
+	// 见 docs/adr/模型接入认证设计.md）。identity 时 identity_id 指向
+	// GET /api/llm/identities 里的一条，api_key_hint 恒空。
+	AuthMode   string `json:"auth_mode"`
+	IdentityID int64  `json:"identity_id,omitempty"`
 }
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
@@ -665,6 +670,8 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 		MaxTokensField:   p.MaxTokensField,
 		SessionHeaderKey: p.SessionHeaderKey,
 		Retry:            p.Retry,
+		AuthMode:         p.AuthMode,
+		IdentityID:       p.IdentityID,
 	}
 }
 

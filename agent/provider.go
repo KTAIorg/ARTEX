@@ -77,6 +77,24 @@ type Config struct {
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+	// Identity 非 nil 时启用 KT 身份直连(docs/adr/模型接入认证设计.md)：
+	// APIKey 被忽略(置占位符)，每个请求由 identityTransport 注入
+	// `Authorization: Bearer <短时身份 token>` + `X-Kito-Token-Name`，
+	// 由 NewAPI 服务端换 managed relay token——本部署零模型 Key。
+	Identity *IdentitySource
+}
+
+// Equal 比较两份完整 provider 配置。Identity 是指针只是为了让 static 模式
+// 保持零值；比较必须看身份内容，否则同一身份两次从 DB 加载会被误判为不同，
+// 让激活配置与绑定/任务路径落到不同的 provider 和限速器。
+func (c Config) Equal(other Config) bool {
+	if c.Identity != nil && other.Identity != nil {
+		if *c.Identity != *other.Identity {
+			return false
+		}
+		c.Identity, other.Identity = nil, nil
+	}
+	return c == other
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:
@@ -263,6 +281,19 @@ func (c Config) NewProviderWithLimiter(limiter *RequestLimiter) (llm.Provider, e
 	if err != nil {
 		return nil, err
 	}
+	if c.Identity != nil {
+		// token 端点的 fetcher 在包 identityTransport 之前快照：共享代理与
+		// 抓包层，但不含 identity 层(否则取 token 递归死锁)也不进 LLM 限速
+		// (token 刷新不该吃模型调用的额度)。独立 20s 超时，不吃流式长超时。
+		fetcher := &http.Client{Transport: client.Transport, Timeout: 20 * time.Second}
+		src := newIdentityTokenSource(*c.Identity, fetcher)
+		client.Transport = identityTransport{base: client.Transport, src: src, managed: c.Identity.ManagedTokenName}
+		// 身份模式下 relay 不跟随重定向：identityTransport 会在每跳重新注入
+		// 真实 Bearer，默认重定向策略可能把它带到跨 origin 或降级 HTTP。
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	return c.newProvider(client, limiter)
 }
 
@@ -280,6 +311,13 @@ func (c Config) newProvider(client *http.Client, limiter *RequestLimiter) (llm.P
 		APIKey:     c.APIKey,
 		Model:      c.Model,
 		HTTPClient: client,
+	}
+	if c.Identity != nil {
+		// norma 要求 APIKey 非空才肯建 provider。身份直连给占位值满足它；
+		// 真实认证头由 identityTransport 在每个请求上强制覆写，占位值永不出门。
+		if lc.APIKey == "" {
+			lc.APIKey = "identity-mode"
+		}
 	}
 	// 思考开关与强度两个字段各自透传(空 = 该字段不发送)。二者解耦:
 	// 可只发 thinking.type、只发 effort、都发、或都不发。

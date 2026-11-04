@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1804,8 +1805,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// would get wrong — legacy/partial clients that never send it stay streaming.
 	var body struct {
 		db.LLMProfile
-		APIKey    string `json:"api_key"`
-		Streaming *bool  `json:"streaming"`
+		APIKey    string  `json:"api_key"`
+		Streaming *bool   `json:"streaming"`
+		AuthMode  *string `json:"auth_mode"` // nil=旧客户端未携带，更新时继承库存认证方式
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1814,6 +1816,43 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	if body.AuthMode != nil {
+		p.AuthMode = *body.AuthMode
+	} else if p.ID > 0 {
+		// 旧客户端不知道 auth_mode。更新已有 identity profile 时必须继承
+		// 库存模式与身份引用，否则空 api_key + 默认 static 会把它悄悄改坏。
+		existing, err := pg.ProfileByID(p.ID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if existing == nil {
+			writeErr(w, 404, "LLM 配置不存在")
+			return
+		}
+		p.AuthMode = existing.AuthMode
+		p.IdentityID = existing.IdentityID
+	}
+	// 认证模式归一与互斥校验（见 docs/adr/模型接入认证设计.md）：
+	// identity 必须绑定身份且不得携带 api_key；static 一律清掉身份引用，
+	// 防止两套认证并存时「读侧选一套」的隐式行为。
+	switch p.AuthMode {
+	case "", "static":
+		p.AuthMode = "static"
+		p.IdentityID = 0
+	case "identity":
+		if p.IdentityID <= 0 {
+			writeErr(w, 400, "身份直连模式必须选择一个 KT 身份")
+			return
+		}
+		if p.APIKey != "" {
+			writeErr(w, 400, "身份直连模式不能同时填写 API Key")
+			return
+		}
+	default:
+		writeErr(w, 400, "auth_mode 只能是 static 或 identity")
+		return
+	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
 	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
@@ -1943,6 +1982,92 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// ---------- llm identities（KT 身份直连，见 docs/adr/模型接入认证设计.md） ----------
+
+// pgListIdentities 只回身份元数据与 secret 尾 4 位 hint，secret 永不出库。
+func (s *Server) pgListIdentities(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	is, err := pg.ListIdentities()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"identities": is})
+}
+
+// pgSaveIdentity 新建/更新身份。client_secret 有 json:"-"，经同名 sibling
+// 字段收（与 profile 的 api_key 同一姿势）；更新时留空 = 保留原值。
+func (s *Server) pgSaveIdentity(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	var body struct {
+		db.LLMIdentity
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	i := body.LLMIdentity
+	i.ClientSecret = body.ClientSecret
+	if i.Name == "" || i.TokenURL == "" || i.ClientID == "" {
+		writeErr(w, 400, "name、token_url、client_id 不能为空")
+		return
+	}
+	if i.ID == 0 && i.ClientSecret == "" {
+		writeErr(w, 400, "新建身份必须提供 client_secret")
+		return
+	}
+	// token_url 只接受 https，防手滑把身份凭据发到明文端点。
+	if !strings.HasPrefix(i.TokenURL, "https://") {
+		writeErr(w, 400, "token_url 必须是 https:// 端点")
+		return
+	}
+	id, err := pg.SaveIdentity(&i)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	// 身份变更可能影响引用它的 profile（改了 managed 名/scope），重建缓存。
+	s.invalidateProfileAgents()
+	s.reapplyActiveProfile()
+	writeJSON(w, 200, map[string]any{"id": id})
+}
+
+// pgDeleteIdentity 拒删仍被 profile 引用的身份（返回 409 提示先解绑）。
+func (s *Server) pgDeleteIdentity(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id, _ := pathInt(r, "id")
+	if id <= 0 {
+		writeErr(w, 400, "invalid id")
+		return
+	}
+	err := pg.DeleteIdentity(r.Context(), id)
+	switch {
+	case err == nil:
+	case errors.Is(err, db.ErrIdentityInUse):
+		writeErr(w, 409, "该身份仍被 LLM 配置引用，请先在相应配置中改用其他认证方式")
+		return
+	case errors.Is(err, sql.ErrNoRows):
+		writeErr(w, 404, "身份不存在")
+		return
+	default:
+		writeErr(w, 500, err.Error())
+		return
+	}
+	s.invalidateProfileAgents()
+	s.reapplyActiveProfile()
+	writeJSON(w, 200, map[string]any{"deleted": id})
+}
+
 // pgLLMPoolStatus reports the failover ("轮询") switches, the resolved chain order
 // and every profile's circuit-breaker state — what the LLM page renders as the
 // "轮询顺序" strip and the per-card health badges.
@@ -1983,22 +2108,52 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 // the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string `json:"provider"` // "openai" | "anthropic"
-		BaseURL   string `json:"base_url"`
-		APIKey    string `json:"api_key"`
-		Proxy     string `json:"proxy"`
-		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
+		Provider   string `json:"provider"` // "openai" | "anthropic"
+		BaseURL    string `json:"base_url"`
+		APIKey     string `json:"api_key"`
+		Proxy      string `json:"proxy"`
+		ProfileID  *int64 `json:"profile_id"` // fallback: use stored key from this profile
+		AuthMode   string `json:"auth_mode"`  // identity=使用表单选择的身份；空=兼容旧客户端
+		IdentityID int64  `json:"identity_id"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// Resolve API key: form input > profile stored key.
+	// Resolve API key: form input > profile stored key. 身份直连 profile 没有
+	// 存量 key：换一枚短时身份 token 当作本次列表调用的 key（一次性、不落库），
+	// 并带上 managed 名，让 NewAPI TokenAuth 走身份解析而不是 sk- 校验。
 	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" && req.ProfileID != nil {
+	managedTokenName := ""
+	identityID := int64(0)
+	if req.AuthMode == "identity" {
+		// 显式身份模式绝不回退到表单里的静态 key，即使 token 交换失败。
+		apiKey = ""
+		identityID = req.IdentityID
+	} else if apiKey == "" && req.ProfileID != nil && req.AuthMode == "" {
+		// 旧客户端不带 auth_mode：仅从库存 profile 推断身份模式。
+		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil && p.AuthMode == "identity" {
+			identityID = p.IdentityID
+		}
+	}
+	if identityID > 0 {
+		if ident, err := s.m.pg.IdentityByID(identityID); err == nil && ident != nil {
+			if tok, err := agent.FetchIdentityToken(agent.IdentitySource{
+				TokenURL: ident.TokenURL, ClientID: ident.ClientID, ClientSecret: ident.ClientSecret,
+				Scope: ident.Scope,
+			}); err == nil {
+				apiKey = tok
+				managedTokenName = ident.ManagedTokenName
+			}
+		}
+	} else if req.AuthMode != "identity" && apiKey == "" && req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
 			apiKey = p.APIKey
 		}
+	}
+	if apiKey == "" && (req.AuthMode == "identity" || identityID > 0) {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "KT 身份不存在或身份 token 获取失败"})
+		return
 	}
 	if apiKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
@@ -2019,12 +2174,18 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	bearerHdr := func() http.Header {
 		h := http.Header{}
 		h.Set("Authorization", "Bearer "+apiKey)
+		if managedTokenName != "" {
+			h.Set("X-Kito-Token-Name", managedTokenName)
+		}
 		return h
 	}
 	anthropicHdr := func() http.Header {
 		h := http.Header{}
 		h.Set("x-api-key", apiKey)
 		h.Set("anthropic-version", "2023-06-01")
+		if managedTokenName != "" {
+			h.Set("X-Kito-Token-Name", managedTokenName)
+		}
 		return h
 	}
 
@@ -2062,6 +2223,12 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	if managedTokenName != "" {
+		// 与生产 provider 一致：identity Bearer 不随 relay 重定向出门。
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 
 	// Try each candidate; return the first that yields a non-empty model list.
 	var lastErr string

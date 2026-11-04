@@ -312,6 +312,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
 可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
 
+**KT 身份直连（零模型 Key）**：在「LLM → KT 身份」录入 Casdoor `client_credentials` 机器身份，再把模型配置的认证方式改为「KT 身份直连」。ARTEX 只在内存中持有短时身份 token，请求 NewAPI（ktapi.cc）时携带 `X-Kito-Token-Name: artex`，由网关服务端换 relay token；部署内不保存模型 API Key，删除 relay scope 或禁用 NewAPI 影子用户即可断供。上线前置依赖与回滚见 [模型接入认证设计](docs/adr/模型接入认证设计.md)。
+
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
 **常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
