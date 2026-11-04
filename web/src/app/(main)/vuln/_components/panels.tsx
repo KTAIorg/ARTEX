@@ -831,6 +831,20 @@ export function VulnCvesPanel({ refreshKey }: { refreshKey: number }) {
 }
 
 
+
+// 采集弹窗快捷国家（mmh3 指纹之外最常见的筛选维度）。
+const VULN_COLLECT_COUNTRIES: [string, string][] = [
+  ["CN", "中国"], ["US", "美国"], ["JP", "日本"], ["DE", "德国"],
+  ["SG", "新加坡"], ["KR", "韩国"], ["HK", "香港"], ["TW", "台湾"], ["ALL", "全部"],
+];
+
+// applyCountryFilter 设置/移除查询体里的 country:XX（ALL 表示去掉国家限制）。
+function applyCountryFilter(query: string, code: string | null): string {
+  const base = query.replace(/\s*country:[A-Za-z]{2}/g, "").trim();
+  if (!code || code === "ALL") return base;
+  return base ? `${base} country:${code}` : `country:${code}`;
+}
+
 // VulnCollectDialog Shodan 采集确认弹窗（关注清单/全量目录共用）：查询可编辑，
 // 无影响组件预填时手填。入队与错误反馈由调用方 submitCollect 完成。
 export function VulnCollectDialog({
@@ -857,6 +871,29 @@ export function VulnCollectDialog({
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>
+          <Field>
+            <FieldLabel>国家/地区（快捷）</FieldLabel>
+            <div className="flex flex-wrap gap-1.5">
+              {VULN_COLLECT_COUNTRIES.map(([code, label]) => {
+                const cur = (target?.query.match(/country:([A-Z]{2})/i) || [])[1]?.toUpperCase();
+                const active = cur === code;
+                return (
+                  <Button
+                    key={code}
+                    type="button"
+                    variant={active ? "default" : "outline"}
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() =>
+                      onQueryChange(applyCountryFilter(target?.query ?? "", active ? null : code))
+                    }
+                  >
+                    {label}
+                  </Button>
+                );
+              })}
+            </div>
+          </Field>
           <Field>
             <FieldLabel htmlFor="shodan-collect-query">Shodan 查询体</FieldLabel>
             <Input
