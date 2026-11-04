@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Kito 统一 AI 钱包（kt-k8s#194）：ARTEX 后端作为用户令牌透传层访问 ktapi.cc
+// KT AI 钱包（kt-k8s#194）：ARTEX 后端作为用户令牌透传层访问 ktapi.cc
 // （NewAPI IAM）。与 vulnproxy 同一套纪律：前端带 X-Identity-Token 打
 // /api/wallet/*，ARTEX JWT 由 requireAuth 把关（普通登录用户即可，不加 admin
 // 门）；用户 identity opaque token 原样作上游 Bearer。

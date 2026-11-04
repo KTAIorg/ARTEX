@@ -1,6 +1,6 @@
 "use client";
 
-// Kito 统一 AI 钱包（kt-k8s#194）：余额卡片 + 可用模型列表 + 充值弹窗。
+// KT AI 钱包（kt-k8s#194）：余额卡片 + 可用模型列表 + 充值弹窗。
 // 后端透传 ktapi.cc（NewAPI IAM），用户 identity 令牌从登录态取（X-Identity-Token）。
 // 充值纪律（对齐 kt-opencode kito-wallet skill）：打开充值、选定网络时才取地址，
 // 不在进页/登录时预创建；地址页面上只显示前 6 后 6，完整地址仅通过复制按钮给出。
@@ -160,7 +160,7 @@ export default function WalletPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">AI 钱包</h1>
         <p className="text-sm text-muted-foreground">
-          Kito 统一 AI 账户（ktapi.cc）：余额与可用模型按你的 KT Identity 账号实时查询。
+          KT AI 账户（ktapi.cc）：余额与可用模型按你的 KT Identity 账号实时查询。
         </p>
       </div>
 
