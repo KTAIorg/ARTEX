@@ -154,6 +154,40 @@ export function clearVulnWorksetDraft() {
   sessionStorage.removeItem(VULN_WS_DRAFT_KEY);
 }
 
+export type VulnCveSyncState = "idle" | "running" | "succeeded" | "failed";
+
+export interface VulnCveSyncStatus {
+  source: "nvd";
+  status: VulnCveSyncState;
+  trigger: string;
+  cursor: string | null;
+  checkpoint_start: string | null;
+  checkpoint_end: string | null;
+  next_start_index: number;
+  total_results: number;
+  items_upserted: number;
+  started_at: string | null;
+  finished_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  updated_at: string;
+}
+
+export interface VulnCveSyncAccepted {
+  accepted: boolean;
+  status: VulnCveSyncStatus;
+}
+
+export class VulnApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "VulnApiError";
+    this.status = status;
+  }
+}
+
 const MISSING_IDENTITY_MSG = "缺少 KT Identity 令牌，请退出后通过 Telegram 重新登录";
 
 async function vulnHttp<T>(path: string, init?: RequestInit): Promise<T> {
@@ -219,7 +253,7 @@ async function vulnHttp<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // 空/非 JSON 响应保留状态码兜底信息。
     }
-    throw new Error(message);
+    throw new VulnApiError(message, r.status);
   }
   if (r.status === 204) return undefined as T;
   return r.json();
@@ -270,6 +304,10 @@ export const vuln = {
   // CVE 全量目录的发布年份桶（年份下拉数据源）。
   cveCatalogYears: () =>
     vulnHttp<{ items: { year: number; count: number }[] | null }>("/cve-catalog/years").then((r) => r.items ?? []),
+
+  cveSyncStatus: () => vulnHttp<VulnCveSyncStatus>("/cve-catalog/sync"),
+
+  triggerCveSync: () => vulnHttp<VulnCveSyncAccepted>("/cve-catalog/sync", { method: "POST" }),
 
   // 人工评级（单资产）：404 = 资产不存在。
   rate: (assetId: number, tier: VulnRatingTier, note?: string) =>
