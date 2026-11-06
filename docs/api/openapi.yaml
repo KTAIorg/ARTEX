@@ -1,5 +1,5 @@
 # x-backfill: partial
-# Covered: task-template CRUD and template-aware task creation.
+# Covered: task-template CRUD, template-aware task creation, and CVE-scoped task/finding lookup.
 # Not covered: other ARTEX routes and the nested schedule configuration schema.
 openapi: 3.1.0
 info:
@@ -101,6 +101,34 @@ paths:
         "404":
           $ref: "#/components/responses/Error"
   /tasks:
+    get:
+      summary: List tasks, optionally restricted to one declared CVE
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cve_id
+          in: query
+          required: false
+          description: Exact CVE declared by the task; tasks without findings are included.
+          schema:
+            $ref: "#/components/schemas/CVEID"
+      responses:
+        "200":
+          description: Matching tasks and the active task id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, active]
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+                  active:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Error"
     post:
       summary: Create a task directly or from a reusable template
       description: |
@@ -109,6 +137,9 @@ paths:
         underscores. Every referenced variable must have a non-empty value;
         unknown values and malformed placeholders are rejected with HTTP 400.
         `template_overrides` changes only the new task and never mutates the template.
+        Every new task must declare at least one CVE. A task may declare multiple
+        CVEs, while each finding must select exactly one of them. Declarations are
+        immutable after creation; legacy tasks and findings without CVEs remain readable.
       security:
         - bearerAuth: []
       requestBody:
@@ -125,7 +156,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Task"
         "400":
-          description: Invalid input, missing/unknown template variable, or malformed placeholder
+          description: Invalid input, missing CVE, missing/unknown template variable, or malformed placeholder
           content:
             application/json:
               schema:
@@ -136,6 +167,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /findings:
+    get:
+      summary: List findings, optionally restricted to one CVE
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cve_id
+          in: query
+          required: false
+          description: Exact CVE recorded on the finding.
+          schema:
+            $ref: "#/components/schemas/CVEID"
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        "200":
+          description: Paginated findings when page, limit, or cve_id is supplied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, page, page_size]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Finding"
+                  total:
+                    type: integer
+                    minimum: 0
+                  page:
+                    type: integer
+                    minimum: 1
+                  page_size:
+                    type: integer
+                    minimum: 1
+        "400":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     bearerAuth:
@@ -292,8 +372,13 @@ components:
           type: integer
           minimum: 0
           maximum: 50
+    CVEID:
+      type: string
+      pattern: '^CVE-\d{4}-\d{4,}$'
+      example: CVE-2026-0001
     CreateTaskRequest:
       type: object
+      required: [cve_ids]
       properties:
         name:
           type: string
@@ -308,6 +393,14 @@ components:
         category_id:
           type: [integer, "null"]
           format: int64
+        cve_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          description: Required immutable CVE declarations. Values are trimmed, uppercased, and deduplicated.
+          items:
+            $ref: "#/components/schemas/CVEID"
         template_id:
           type: integer
           format: int64
@@ -363,7 +456,7 @@ components:
         - required: [template_id]
     Task:
       type: object
-      required: [id, description, goal, exploration_id, status, created_at]
+      required: [id, description, goal, exploration_id, status, created_at, cve_ids]
       properties:
         id:
           type: string
@@ -378,6 +471,11 @@ components:
           type: string
         goal:
           type: string
+        cve_ids:
+          type: array
+          description: Empty only for legacy tasks created before CVE declarations became mandatory.
+          items:
+            $ref: "#/components/schemas/CVEID"
         exploration_id:
           type: integer
           format: int64
@@ -386,6 +484,36 @@ components:
         worker_count:
           type: integer
         created_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+    Finding:
+      type: object
+      description: |
+        A finding belongs to at most one CVE. For a task with declarations, new
+        reports must select one CVE from that task's cve_ids; selecting another
+        task's CVE or omitting cve_id is rejected. Legacy findings may have an
+        empty cve_id and remain readable without backfilling or guessing.
+      properties:
+        id:
+          type: string
+        finding_id:
+          type: string
+        task_id:
+          type: string
+        cve_id:
+          type: string
+          description: One CVE declared by the finding's task; empty for legacy findings.
+        vulnclass:
+          type: string
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+        summary:
+          type: string
+        evidence:
+          type: string
+        ts:
           type: string
           format: date-time
       additionalProperties: true

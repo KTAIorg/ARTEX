@@ -66,6 +66,7 @@ type TaskDTO struct {
 	SourceTaskIDs      []string           `json:"source_task_ids"`
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
+	CVEIDs             []string           `json:"cve_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
 	WorkerCount        int                `json:"worker_count"`     // 本任务 Worker 数;0=用全局默认
 }
@@ -145,6 +146,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		LLMFailoverReason:  llmState.FailoverReason,
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
+		CVEIDs:             append([]string{}, t.CVEIDs...),
 		CoverageEnabled:    t.CoverageEnabled,
 		WorkerCount:        t.WorkerCount,
 	}
@@ -328,6 +330,7 @@ type FindingDTO struct {
 	ID                   string `json:"id"`
 	FindingID            string `json:"finding_id,omitempty"` // standalone findings-table id — the handle for status updates
 	VulnClass            string `json:"vulnclass"`
+	CVEID                string `json:"cve_id,omitempty"`
 	Name                 string `json:"name,omitempty"` // 漏洞名称;为空时前端回退展示 vulnclass
 	Severity             string `json:"severity"`       // critical | high | medium | low
 	Status               string `json:"status"`         // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
@@ -385,9 +388,10 @@ func assetLabel(a *db.Asset) string {
 }
 
 // findingPayload mirrors the JSON written by the worker's report_finding tool
-// (agent/tools.go addFinding): {vulnclass, severity, summary, evidence:{by,poc}}.
+// (agent/tools.go addFinding): {vulnclass, cve_id, severity, summary, evidence:{by,poc}}.
 type findingPayload struct {
 	VulnClass string          `json:"vulnclass"`
+	CVEID     string          `json:"cve_id"`
 	Name      string          `json:"name"`
 	Severity  string          `json:"severity"`
 	Summary   string          `json:"summary"`
@@ -400,6 +404,7 @@ func findingDTO(n *db.Node) FindingDTO {
 	d := FindingDTO{
 		ID:        i64s(n.ID),
 		VulnClass: p.VulnClass,
+		CVEID:     p.CVEID,
 		Name:      p.Name,
 		Severity:  p.Severity,
 		Status:    db.FindingPending,
@@ -466,6 +471,7 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
 		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
 		VulnClass:            f.VulnClass,
+		CVEID:                f.CVEID,
 		Name:                 f.Name,
 		Severity:             f.Severity,
 		Status:               status,

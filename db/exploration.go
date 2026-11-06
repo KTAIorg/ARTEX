@@ -193,6 +193,25 @@ func (s *ExplorationStore) Root() (description, goal string, err error) {
 	return d.String, goal, err
 }
 
+func (s *ExplorationStore) RootContext() (description, goal string, cveIDs []string, err error) {
+	var d sql.NullString
+	var payload []byte
+	err = s.db.QueryRow(`SELECT e.description,e.goal,COALESCE(n.payload,'{}'::jsonb)
+FROM explorations e
+LEFT JOIN exploration_nodes n ON n.exploration_id=e.id AND n.state='origin'
+WHERE e.id=$1 ORDER BY n.id LIMIT 1`, s.expID).Scan(&d, &goal, &payload)
+	if err != nil {
+		return "", "", nil, err
+	}
+	var origin struct {
+		CVEIDs []string `json:"cve_ids"`
+	}
+	if err := json.Unmarshal(payload, &origin); err != nil {
+		return "", "", nil, err
+	}
+	return d.String, goal, append([]string{}, origin.CVEIDs...), nil
+}
+
 // AddNode writes a typed reasoning node with optional anchors to asset ids.
 func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64) (int64, error) {
 	raw, _ := json.Marshal(payload)

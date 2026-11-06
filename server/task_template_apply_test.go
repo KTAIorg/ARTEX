@@ -88,6 +88,7 @@ func TestCreateTaskFromTemplateHTTPReusesRendersAndOverrides(t *testing.T) {
 	code, first := do(map[string]any{
 		"template_id":        template.ID,
 		"template_variables": variables("https://one.example", "CVE-2026-0001", "one.example"),
+		"cve_ids":            []string{"CVE-2026-0001", "CVE-2026-0002"},
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("first create status=%d body=%v", code, first)
@@ -103,6 +104,7 @@ func TestCreateTaskFromTemplateHTTPReusesRendersAndOverrides(t *testing.T) {
 	code, second := do(map[string]any{
 		"template_id":        template.ID,
 		"template_variables": variables("https://two.example", "CVE-2026-0002", "two.example"),
+		"cve_ids":            []string{"CVE-2026-0002"},
 		"template_overrides": map[string]any{
 			"goal": "覆盖后的目标", "remark": "", "worker_count": 0, "category_id": nil,
 		},

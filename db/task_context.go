@@ -62,6 +62,11 @@ func (d *DB) hydrateTaskContext(t *Task) error {
 		return err
 	}
 	t.CompanyIDs = companies
+	cveIDs, err := d.TaskCVEIDs(t.ID)
+	if err != nil {
+		return err
+	}
+	t.CVEIDs = cveIDs
 	applyTaskLLMContext(t, legacyProfileID, activeProfileID, revision, chain)
 	return nil
 }
@@ -110,11 +115,11 @@ type taskBatchContext struct {
 	chain           []TaskLLMProfile
 	sourceIDs       []int64
 	companyIDs      []int64
+	cveIDs          []string
 }
 
-// hydrateTasksContext loads every task's LLM chain, source tasks, and company
-// scopes with three bulk queries. ListTasks used to issue these queries once per
-// task, making startup and task-list hydration grow as 3N+1 database round trips.
+// hydrateTasksContext loads every task's LLM chain, source tasks, company scopes,
+// and CVE declarations with four bulk queries instead of one query per task and kind.
 func (d *DB) hydrateTasksContext(tasks []*Task) error {
 	if len(tasks) == 0 {
 		return nil
@@ -238,10 +243,36 @@ ORDER BY task_id, id`, ids)
 	}
 	rows.Close()
 
+	rows, err = d.Query(`
+SELECT task_id, cve_id
+FROM task_cves
+WHERE task_id=ANY($1::bigint[])
+ORDER BY task_id, position`, ids)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var taskID int64
+		var cveID string
+		if err := rows.Scan(&taskID, &cveID); err != nil {
+			rows.Close()
+			return err
+		}
+		if context := contexts[taskID]; context != nil {
+			context.cveIDs = append(context.cveIDs, cveID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
 	for id, context := range contexts {
 		task := byID[id]
 		task.SourceTaskIDs = context.sourceIDs
 		task.CompanyIDs = context.companyIDs
+		task.CVEIDs = append([]string{}, context.cveIDs...)
 		applyTaskLLMContext(
 			task,
 			context.legacyProfileID,

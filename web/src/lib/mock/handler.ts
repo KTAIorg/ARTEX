@@ -34,7 +34,7 @@ import type {
   TrafficEvidenceRole,
   TrafficEvidenceSnapshot,
 } from "../types";
-import { MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT, taskTemplateVariableNames } from "../types";
+import { MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT, parseCVEIDs, taskTemplateVariableNames } from "../types";
 import * as D from "./data";
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
@@ -476,6 +476,11 @@ function mockFilterFindings(q: URLSearchParams): (typeof mockFindings)[number][]
   if (vulnclass) list = list.filter((finding) => finding.vulnclass === vulnclass);
   if (taskID === "__unassigned__") list = list.filter((finding) => !finding.task_id);
   else if (taskID) list = list.filter((finding) => finding.task_id === taskID);
+  if (q.has("cve_id")) {
+    const parsed = parseCVEIDs(q.get("cve_id") ?? "");
+    if (!parsed || parsed.length !== 1) throw new Error("CVE 查询参数无效");
+    list = list.filter((finding) => finding.cve_id === parsed[0]);
+  }
   return list;
 }
 
@@ -1225,7 +1230,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── tasks ──
   if (path === "/tasks" && m === "GET") {
     sortMockTasks();
-    return { tasks: mockTasks.map(publicMockTask), active: mockActiveTask };
+    let tasks = mockTasks;
+    if (q.has("cve_id")) {
+      const parsed = parseCVEIDs(q.get("cve_id") ?? "");
+      if (!parsed || parsed.length !== 1) throw new Error("CVE 查询参数无效");
+      tasks = tasks.filter((task) => task.cve_ids?.includes(parsed[0]));
+    }
+    return { tasks: tasks.map(publicMockTask), active: mockActiveTask };
   }
   if (path === "/tasks" && m === "POST") {
     let suffix = 1;
@@ -1299,6 +1310,11 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     ) {
       throw new Error("使用模板变量或覆盖字段时必须提供 template_id");
     }
+    if (!Array.isArray(b.cve_ids) || b.cve_ids.length === 0 || b.cve_ids.some((id) => typeof id !== "string")) {
+      throw new Error("至少需要提供一个 CVE（cve_ids）");
+    }
+    const cveIDs = parseCVEIDs(b.cve_ids.join(" "));
+    if (!cveIDs) throw new Error("CVE 列表无效或超过 100 个");
     if (companyIDs.some((companyID) => !mockCompanies.some((company) => company.id === companyID))) {
       throw new Error("关联企业不存在或无效");
     }
@@ -1335,6 +1351,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       llm_failover_state: profileIDs.length ? "ready" : "default",
       source_task_ids: sourceTaskIDs,
       company_ids: companyIDs,
+      cve_ids: cveIDs,
     };
     const numericTaskID = nextMockTaskAssetID++;
     mockTaskAssetIDs.set(id, numericTaskID);

@@ -192,7 +192,7 @@ func (s *Server) toolListTasks() actool.CoreTool {
 				status := s.deriveTaskStatus(t)
 				lifecycle := t.lifecycleSnapshot()
 				dur := taskRunSeconds(lifecycle.ActiveRunSeconds, lifecycle.RunSegmentStartedAt, time.Now().Unix(), status, lifecycle.Paused, lifecycle.Queued)
-				row := map[string]any{"id": t.ID, "description": t.Description, "goal": t.Goal, "status": status, "run_seconds": dur}
+				row := map[string]any{"id": t.ID, "description": t.Description, "goal": t.Goal, "cve_ids": append([]string{}, t.CVEIDs...), "status": status, "run_seconds": dur}
 				if t.ParentRef != "" {
 					row["parent_ref"] = t.ParentRef
 				}
@@ -237,17 +237,19 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 		objSchema(map[string]any{
 			"description":            strParam("任务描述(简短标题)"),
 			"goal":                   strParam("任务目标(要达成什么)"),
+			"cve_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "必填：本任务关联的 CVE 列表，至少 1 个、最多 100 个；格式 CVE-YYYY-NNNN。每个 finding 必须选择其中一个"},
 			"parent_ref":             strParam("可选：父任务 id(做父子关联)"),
 			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("可选：只读继承的来源任务 id 列表(最多 %d 个)。子任务可只读引用这些任务已探明的资产/结论作为起点；与 parent_ref 的纯父子指针不同，这是内容继承。", db.MaxTaskSourceCount)},
 			"llm_profile_id":         map[string]any{"type": "integer", "description": "可选：指定本子任务 planner/worker 用的 LLM 配置 id(见 list_llm_profiles)；留空则继承父任务、再回退全局激活配置"},
 			"timeout_seconds":        map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
-		}, "description", "goal"),
+		}, "description", "goal", "cve_ids"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Description          string          `json:"description"`
 				Goal                 string          `json:"goal"`
+				CVEIDs               []string        `json:"cve_ids"`
 				ParentRef            string          `json:"parent_ref"`
 				SourceTaskIDs        []string        `json:"source_task_ids"`
 				LLMProfileID         json.RawMessage `json:"llm_profile_id"`
@@ -262,6 +264,14 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if strings.TrimSpace(a.Goal) == "" {
 				return actool.Errorf("goal 为必填"), nil
 			}
+			if len(a.CVEIDs) == 0 {
+				return actool.Errorf("至少需要提供一个 CVE（cve_ids）；不会从父任务静默继承"), nil
+			}
+			cveIDs, err := db.NormalizeCVEIDs(a.CVEIDs)
+			if err != nil {
+				return actool.Errorf("CVE 列表无效：" + err.Error()), nil
+			}
+			a.CVEIDs = cveIDs
 			if a.TimeoutSeconds < 0 {
 				a.TimeoutSeconds = 0
 			}
@@ -333,6 +343,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
 				Name:                 name,
 				SourceTaskIDs:        sourceIDs,
+				CVEIDs:               a.CVEIDs,
 				LLMProfileIDs:        llmIDs,
 				TimeoutSeconds:       a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
@@ -565,7 +576,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedFindingTrafficTools() // 增加可选证据参数及只读证据工具，保留用户配置
 	s.seedFindingWorkflowTools()
 	s.seedFindingCaseTools()
-	s.seedAtomicTools() // 原子操作层:seed 进 tools 表,默认绑 worker+pentest(首插入生效)
+	s.seedAtomicTools()      // 原子操作层:seed 进 tools 表,默认绑 worker+pentest(首插入生效)
 	s.seedExpWorkerBinding() // EXP 资产库工具补绑 worker(一次性，flag 守卫)
 	s.seedSopRoleAgents()    // SOP 角色化:预置武器匠/收割机 agent + 工具/skill 绑定(一次性，flag 守卫)
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
@@ -634,7 +645,7 @@ func (s *Server) migrateReporterWorkflow() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v8_finding_case_tools"
+	const flag = "tool_schema_refresh_v9_task_cves"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
