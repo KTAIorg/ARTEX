@@ -27,6 +27,7 @@ type DBFinding struct {
 	TaskID               *int64
 	NodeID               *int64
 	VulnClass            string
+	CVEID                string
 	Name                 string // 漏洞名称(可读标题);为空时前端回退展示 VulnClass
 	Severity             string
 	Summary              string
@@ -106,7 +107,7 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 
 // findingSelectCols is the column list (with task_description join) every finding
 // list query selects, so scanFinding stays in sync across callers.
-const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.name, ''), f.severity, f.summary,
+const findingSelectCols = `f.id, f.task_id, f.node_id, f.vulnclass, COALESCE(f.cve_id, ''), COALESCE(f.name, ''), f.severity, f.summary,
 		f.evidence, f.worker, f.asset_ids, COALESCE(f.status, 'pending'), f.created_at,
 	       COALESCE(t.description, '') AS task_description, f.evidence_version, f.report_evidence_version,
 	(SELECT count(*) FROM finding_traffic_bindings b WHERE b.finding_id=f.id)`
@@ -121,7 +122,7 @@ func scanFindings(rows interface {
 	for rows.Next() {
 		f := &DBFinding{}
 		var aidsJSON string
-		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
+		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.CVEID, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt, &f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount); err != nil {
 			return nil, err
 		}
@@ -157,6 +158,7 @@ type FindingFilter struct {
 	Severity      string // high | medium | low
 	Status        string // pending | false_positive | ignored | resolved
 	VulnClass     string
+	CVEID         string
 	TaskID        string // 任务 id(字符串形式;空/非法 = 不按任务筛选)
 	Query         string // 名称/类型/摘要/证据/报告正文的模糊检索关键词
 	Sort          string // "severity" | "time"
@@ -202,6 +204,7 @@ func (f FindingFilter) where() (string, []any) {
 	add("severity", f.Severity)
 	add("status", f.Status)
 	add("vulnclass", f.VulnClass)
+	add("cve_id", f.CVEID)
 	if from := strings.TrimSpace(f.From); from != "" {
 		if parsed, err := time.Parse(time.RFC3339, from); err == nil {
 			args = append(args, parsed)
@@ -536,7 +539,7 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 	for rows.Next() {
 		f := &DBFinding{}
 		var aidsJSON string
-		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
+		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.CVEID, &f.Name, &f.Severity,
 			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 			&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report); err != nil {
 			return nil, err
@@ -667,7 +670,7 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
 		WHERE f.id = $1`, id).Scan(
-		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
+		&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.CVEID, &f.Name, &f.Severity,
 		&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
 		&f.TaskDescription, &f.EvidenceVersion, &f.ReportEvidenceVersion, &f.TrafficCount, &f.Report, &reportConv)
 	if err == sql.ErrNoRows {

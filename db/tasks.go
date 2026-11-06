@@ -38,6 +38,7 @@ type Task struct {
 	LLMFailoverReason  string     `json:"llm_failover_reason,omitempty"`
 	SourceTaskIDs      []int64    `json:"source_task_ids,omitempty"`
 	CompanyIDs         []int64    `json:"company_ids,omitempty"`
+	CVEIDs             []string   `json:"cve_ids"`
 	ParentRef          string     `json:"parent_ref,omitempty"` // 父任务 id(编排 spawn 记录;空=顶层)
 	CreatedAt          time.Time  `json:"created_at"`
 	CompletedAt        *time.Time `json:"completed_at,omitempty"` // 进入终态(done/failed/timeout)的时刻;非终态为 nil
@@ -180,6 +181,7 @@ type TaskCreateOptions struct {
 	CategoryID           *int64
 	SourceTaskIDs        []int64
 	CompanyIDs           []int64
+	CVEIDs               []string
 	LLMProfileIDs        []int64
 	TimeoutSeconds       int
 	PlanHeartbeatSeconds int
@@ -205,6 +207,11 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		return nil, err
 	}
 	opts.CompanyIDs = companyIDs
+	cveIDs, err := NormalizeCVEIDs(opts.CVEIDs)
+	if err != nil {
+		return nil, err
+	}
+	opts.CVEIDs = cveIDs
 	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
@@ -223,6 +230,7 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		"summary":     "任务起点：" + description + "；目标：" + goal,
 		"description": description,
 		"goal":        goal,
+		"cve_ids":     opts.CVEIDs,
 	})
 	if _, err := tx.Exec(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -266,6 +274,7 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		LLMProfileIDs:  append([]int64(nil), opts.LLMProfileIDs...),
 		SourceTaskIDs:  append([]int64(nil), opts.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
+		CVEIDs:         append([]string{}, opts.CVEIDs...),
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled, WorkerCount: opts.WorkerCount, Remark: opts.Remark,
 	}
@@ -273,6 +282,9 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 INSERT INTO tasks(name, remark, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, worker_count)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11)
 RETURNING id, status, paused, created_at`, opts.Name, opts.Remark, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.WorkerCount).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+		return nil, err
+	}
+	if err := insertTaskCVEs(tx, t.ID, opts.CVEIDs); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -310,6 +322,32 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.Remark, opts.Category
 		}
 	}
 	return t, tx.Commit()
+}
+
+func insertTaskCVEs(tx *sql.Tx, taskID int64, cveIDs []string) error {
+	for position, cveID := range cveIDs {
+		if _, err := tx.Exec(`INSERT INTO task_cves(task_id,cve_id,position) VALUES ($1,$2,$3)`, taskID, cveID, position); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DB) TaskCVEIDs(taskID int64) ([]string, error) {
+	rows, err := d.Query(`SELECT cve_id FROM task_cves WHERE task_id=$1 ORDER BY position`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var cveID string
+		if err := rows.Scan(&cveID); err != nil {
+			return nil, err
+		}
+		out = append(out, cveID)
+	}
+	return out, rows.Err()
 }
 
 func insertTaskCompanies(tx *sql.Tx, taskID int64, companyIDs []int64) error {

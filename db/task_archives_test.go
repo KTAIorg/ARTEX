@@ -133,7 +133,7 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, err := d.CreateTaskWithOptions("archive database roundtrip", "restore exact graph", TaskCreateOptions{
-		Name: "cold task", WorkerCount: 7,
+		Name: "cold task", WorkerCount: 7, CVEIDs: []string{"CVE-2026-1001", "CVE-2026-1002"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,11 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.AddFinding(task.ID, nodeID, vulnclass, "archive finding", SeverityCritical, "summary", "evidence", "worker", []int64{assetID}); err != nil {
+	recordedFinding, err := store.RecordFinding(t.Context(), RecordFindingInput{
+		TaskID: task.ID, VulnClass: vulnclass, Name: "archive finding", Severity: SeverityCritical,
+		Summary: "summary", Evidence: "evidence", Worker: "worker", CVEID: "CVE-2026-1002", AssetIDs: []int64{assetID},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	intel, err := d.RecordIntelligence(t.Context(), task.ID, 0, "archive-qa", IntelligenceInput{Kind: "credential", Title: "archive credential", Content: "archive-fixture", Evidence: "local fixture", Confidence: "observed"})
@@ -301,6 +305,13 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 	if live.Name != "cold task" || live.Remark != remark || live.WorkerCount != 7 || !live.Paused {
 		t.Fatalf("restored task metadata mismatch: %+v", live)
+	}
+	if len(live.CVEIDs) != 2 || live.CVEIDs[0] != "CVE-2026-1001" || live.CVEIDs[1] != "CVE-2026-1002" {
+		t.Fatalf("restored task CVEs mismatch: %+v", live.CVEIDs)
+	}
+	restoredFinding, err := d.GetFinding(recordedFinding.FindingID)
+	if err != nil || restoredFinding == nil || restoredFinding.CVEID != "CVE-2026-1002" {
+		t.Fatalf("restored finding CVE mismatch: %+v, %v", restoredFinding, err)
 	}
 	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {
 		t.Fatal(err)

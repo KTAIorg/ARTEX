@@ -574,6 +574,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- CVE assignment is immutable task context. Empty task_cves rows are reserved for
+-- legacy/internal tasks; public creation paths require at least one entry.
+CREATE TABLE IF NOT EXISTS task_cves (
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    cve_id     TEXT NOT NULL CHECK (cve_id ~ '^CVE-[0-9]{4}-[0-9]{4,}$'),
+    position   INTEGER NOT NULL CHECK (position >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, cve_id),
+    UNIQUE (task_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_task_cves_cve_task ON task_cves(cve_id, task_id);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_alive  ON tasks(created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE deleted_at IS NULL;
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
@@ -1193,6 +1205,7 @@ CREATE TABLE IF NOT EXISTS findings (
     summary     TEXT NOT NULL DEFAULT '',
     evidence    TEXT NOT NULL DEFAULT '',
     worker      TEXT NOT NULL DEFAULT '',
+    cve_id      TEXT CHECK (cve_id IS NULL OR cve_id ~ '^CVE-[0-9]{4}-[0-9]{4,}$'),
     asset_ids   JSONB NOT NULL DEFAULT '[]',
     -- 处置状态：pending 待处理 / in_progress 处理中 / confirmed 已确认 / resolved 已处理 / fixed 已修复 /
     -- false_positive 误报 / ignored 忽略 / duplicate 重复 / risk_accepted 风险接受。
@@ -1207,9 +1220,13 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pend
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report_conversation_id BIGINT REFERENCES conversations(id) ON DELETE SET NULL;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS cve_id TEXT
+    CHECK (cve_id IS NULL OR cve_id ~ '^CVE-[0-9]{4}-[0-9]{4,}$');
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_cve_task ON findings(cve_id, task_id, created_at DESC)
+    WHERE cve_id IS NOT NULL;
 -- 「按资产」视图靠 asset_ids @> '[<id>]' 反查发现,没有这个 GIN 索引就是全表扫。
 CREATE INDEX IF NOT EXISTS idx_findings_asset_ids ON findings USING GIN(asset_ids jsonb_path_ops);
 

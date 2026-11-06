@@ -183,8 +183,10 @@ import type {
   TaskTemplateOverrides,
 } from "@/lib/types";
 import {
+  MAX_TASK_CVE_COUNT,
   MAX_TASK_REMARK_RUNES,
   MAX_TASK_WORKER_COUNT,
+  parseCVEIDs,
   parseWorkerCountInput,
   taskTemplateVariableNames,
 } from "@/lib/types";
@@ -3893,6 +3895,7 @@ function CreateTaskSheet({
   );
   const [description, setDescription] = React.useState("");
   const [goal, setGoal] = React.useState("");
+  const [cveInput, setCveInput] = React.useState("");
   const [selectedTemplateID, setSelectedTemplateID] = React.useState<
     number | null
   >(null);
@@ -3954,6 +3957,13 @@ function CreateTaskSheet({
     if (prefill.name) setName(prefill.name);
     if (prefill.description) setDescription(prefill.description);
     if (prefill.goal) setGoal(prefill.goal);
+    if (prefill.vulnWs) {
+      const declared = readVulnWorksetDraft()
+        .map((item) => item.cve?.trim())
+        .filter((cve): cve is string => Boolean(cve));
+      const parsed = parseCVEIDs(declared.join(" "));
+      if (parsed && parsed.length > 0) setCveInput(parsed.join("\n"));
+    }
     setOpen(true);
   }, [prefill]);
 
@@ -3987,6 +3997,15 @@ function CreateTaskSheet({
   async function createTask() {
     if (!description.trim() || !goal.trim()) {
       toast.error("请填写描述与目标");
+      return;
+    }
+    const cveIds = parseCVEIDs(cveInput);
+    if (!cveIds || cveIds.length === 0) {
+      toast.error(
+        cveInput.trim()
+          ? `CVE 格式无效或去重后超过 ${MAX_TASK_CVE_COUNT} 个，格式示例：CVE-2026-0001`
+          : "请至少填写一个 CVE",
+      );
       return;
     }
     if (sourceTaskIDs.length > MAX_SOURCE_TASKS) {
@@ -4034,6 +4053,7 @@ function CreateTaskSheet({
         categoryId: categoryID,
         description: description.trim(),
         goal: goal.trim(),
+        cveIds,
         templateId: appliedTemplate?.id,
         templateVariables: appliedTemplate ? templateVariables : undefined,
         templateOverrides: appliedTemplate ? templateOverrides : undefined,
@@ -4068,6 +4088,7 @@ function CreateTaskSheet({
       setCategoryID(undefined);
       setDescription("");
       setGoal("");
+      setCveInput("");
       setSelectedTemplateID(null);
       setAppliedTemplate(null);
       setTemplateVariables({});
@@ -4371,6 +4392,19 @@ function CreateTaskSheet({
                     : "可多选；上传后把文件的绝对路径追加到描述，供 worker 用 Read/Bash 打开"}
                 </span>
               </div>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="cve-ids">CVE（必填）</Label>
+              <Textarea
+                id="cve-ids"
+                className="min-h-24"
+                placeholder={"CVE-2026-0001\nCVE-2026-0002"}
+                value={cveInput}
+                onChange={(e) => setCveInput(e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                至少 1 个、最多 {MAX_TASK_CVE_COUNT} 个；支持空白、逗号或分号分隔。创建后不可修改，每个 finding 必须选择其中一个 CVE。
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="goal">目标</Label>

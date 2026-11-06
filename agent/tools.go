@@ -463,6 +463,9 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		var fp map[string]any
 		_ = json.Unmarshal(n.Payload, &fp)
 		m := map[string]any{"id": n.ID, "summary": fp["summary"]}
+		if cveID, ok := fp["cve_id"].(string); ok && cveID != "" {
+			m["cve_id"] = cveID
+		}
 		if from := factFrom[n.ID]; from > 0 {
 			m["from_intent"] = from // 本漏洞由哪个意图产生
 		}
@@ -514,8 +517,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	}
 	// the original task (root) so the planner always has it, not just the
 	// decomposed goals.
-	if description, goal, err := t.ts.Root(); err == nil {
-		out["task"] = map[string]any{"description": description, "goal": goal}
+	if description, goal, cveIDs, err := t.ts.RootContext(); err == nil {
+		out["task"] = map[string]any{"description": description, "goal": goal, "cve_ids": cveIDs}
 	}
 	// Direct source tasks are a live, read-only blackboard view. Keep their
 	// summaries in a separate field so their intents never enter this task's
@@ -1224,6 +1227,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 func (t *ToolSet) addFinding() actool.CoreTool {
 	return writeTool("report_finding", "记录确认的漏洞，用 evidence 提供命令输出、日志等可验证证据。任务上下文传当前 intent_id。返回的 finding_id 是独立漏洞记录 ID，finding_node_id 是探索节点 ID（第一行保留该节点编号）。", obj(map[string]any{
 		"vulnclass": str("漏洞类别"), "name": str("漏洞名称"), "severity": str("critical|high|medium|low"), "summary": str("发现摘要"),
+		"cve_id":    str("有 CVE 的任务必填：必须选择本任务 cve_ids 中声明的一个 CVE；每个 finding 只对应一个 CVE"),
 		"intent_id": idp("当前任务的意图 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id"},
 		"evidence":         str("证据/PoC 文本"),
 		"evidence_hint_id": idp("可选：本任务中对应此漏洞的提示节点 ID，自动携带其结构化 traffic_refs；不能引用继承提示或其他漏洞的提示"),
@@ -1232,6 +1236,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
 			VulnClass, Name, Severity, Summary, Evidence string
+			CVEID                                        string            `json:"cve_id"`
 			IntentID                                     json.RawMessage   `json:"intent_id"`
 			AssetIDs                                     []json.RawMessage `json:"asset_ids"`
 			TrafficRefs                                  []db.TrafficRef   `json:"traffic_refs"`
@@ -1258,7 +1263,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, CVEID: a.CVEID, AssetIDs: pidList(a.AssetIDs)}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)

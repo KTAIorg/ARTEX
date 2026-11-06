@@ -7,6 +7,18 @@ export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 // Keep these limits aligned with db.MaxTaskRemarkRunes and db.MaxTaskWorkerCount.
 export const MAX_TASK_REMARK_RUNES = 2000;
 export const MAX_TASK_WORKER_COUNT = 50;
+export const MAX_TASK_CVE_COUNT = 100;
+
+export function parseCVEIDs(value: string): string[] | null {
+  const ids = value
+    .split(/[\s,，;；]+/u)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+  const unique = [...new Set(ids)];
+  if (unique.length > MAX_TASK_CVE_COUNT) return null;
+  if (unique.some((id) => !/^CVE-\d{4}-\d{4,}$/.test(id))) return null;
+  return unique;
+}
 
 // Parse the optional worker-count input without silently changing invalid values.
 // An empty field means 0 (use the global default); every other value must be an
@@ -60,6 +72,7 @@ export interface Task {
   source_task_ids?: string[]; // directly related tasks inherited as read-only context
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
+  cve_ids?: string[]; // immutable CVE declarations; legacy tasks may have an empty list
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
 }
 
@@ -538,6 +551,7 @@ export interface FindingAsset {
 }
 
 export interface Finding {
+  cve_id?: string;
   case_id?: string;
   traffic_count?: number;
   evidence_version?: number;

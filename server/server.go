@@ -889,6 +889,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/companies/reattribute", s.reattribute)
 
 	mux.HandleFunc("GET /api/exploration/frontier", s.frontier)
+	mux.HandleFunc("GET /api/findings", s.findings)
 	mux.HandleFunc("GET /api/exploration/findings", s.findings)
 	mux.HandleFunc("GET /api/exploration/findings/groups", s.findingGroups)
 	mux.HandleFunc("GET /api/exploration/finding-cases", s.listFindingCases)
@@ -1226,6 +1227,15 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	cveID := ""
+	if r.URL.Query().Has("cve_id") {
+		var err error
+		cveID, err = db.NormalizeCVEID(r.URL.Query().Get("cve_id"))
+		if err != nil {
+			writeErr(w, 400, "CVE 查询参数无效："+err.Error())
+			return
+		}
+	}
 	active := ""
 	if t := s.m.ActiveTask(); t != nil {
 		active = t.ID
@@ -1236,6 +1246,15 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
+		if cveID != "" {
+			matched := false
+			for _, declared := range t.CVEIDs {
+				matched = matched || declared == cveID
+			}
+			if !matched {
+				continue
+			}
+		}
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
 		applyTaskArchiveBlocker(&dto, archiveBlockers)
 		metric := metrics[t.ExpID]
@@ -1671,6 +1690,7 @@ type createTaskReq struct {
 	LLMProfileIDs        []int64                `json:"llm_profile_ids,omitempty"`   // 有序任务级配置链;第一项初始生效
 	SourceTaskIDs        []string               `json:"source_task_ids,omitempty"`   // 仅直接、只读继承的来源任务
 	CompanyIDs           []int64                `json:"company_ids,omitempty"`       // 关联企业范围并快照关联当前企业资产;不复制资产或强制生成意图
+	CVEIDs               []string               `json:"cve_ids,omitempty"`           // 新任务必填;一个任务可声明多个 CVE
 	TimeoutSeconds       int                    `json:"timeout_seconds"`             // 任务级超时(秒);0/省略=不限时
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"`      // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
 	SeedFirstIntent      *bool                  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
@@ -1700,6 +1720,16 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Description) == "" {
 		req.Description = "未命名任务"
 	}
+	if len(req.CVEIDs) == 0 {
+		writeErr(w, 400, "至少需要提供一个 CVE（cve_ids）")
+		return
+	}
+	cveIDs, err := db.NormalizeCVEIDs(req.CVEIDs)
+	if err != nil {
+		writeErr(w, 400, "CVE 列表无效："+err.Error())
+		return
+	}
+	req.CVEIDs = cveIDs
 	if len(req.LLMProfileIDs) == 0 && req.LLMProfileID != nil {
 		req.LLMProfileIDs = []int64{*req.LLMProfileID}
 	}
@@ -1766,7 +1796,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
 		Schedule: schedule,
 		Name:     strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
-		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
+		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, CVEIDs: req.CVEIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
 		Remark:          remark,
@@ -2176,11 +2206,17 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	// 无 task 参数 → 全局「发现」页：从独立 findings 表读取（任务删除后 finding 依然保留）。
 	// 带 task 参数 → 仅该任务（任务概览/发现 Tab 用），从 exploration_nodes 读（任务在则节点在）。
 	q := r.URL.Query()
+	if q.Has("cve_id") {
+		if _, err := db.NormalizeCVEID(q.Get("cve_id")); err != nil {
+			writeErr(w, 400, "CVE 查询参数无效："+err.Error())
+			return
+		}
+	}
 	taskParam := q.Get("task")
 	if taskParam == "" {
-		// 带 page/limit → 服务端分页 {items,total,...}；不带 → 裸数组（dashboard 汇总用，
+		// 带 page/limit/cve_id → 服务端分页 {items,total,...}；不带 → 裸数组（dashboard 汇总用，
 		// 与 intents 端点的兼容策略一致）。筛选/排序统一下推到 SQL。
-		if q.Get("page") == "" && q.Get("limit") == "" {
+		if q.Get("page") == "" && q.Get("limit") == "" && !q.Has("cve_id") {
 			fs, _ := s.m.pg.ListFindings(500)
 			assets := s.resolveFindingAssets(fs)
 			out := make([]FindingDTO, 0, len(fs))

@@ -343,6 +343,7 @@ export const api = {
     llmProfileIds?: number[];
     sourceTaskIds?: string[];
     companyIds?: number[];
+    cveIds: string[];
     timeoutSeconds?: number;
     seedFirstIntent?: boolean;
     planHeartbeatSeconds?: number;
@@ -363,6 +364,7 @@ export const api = {
       llm_profile_ids: input.llmProfileIds ?? [],
       source_task_ids: input.sourceTaskIds ?? [],
       company_ids: input.companyIds ?? [],
+      cve_ids: input.cveIds,
       timeout_seconds: input.timeoutSeconds ?? 0,
       seed_first_intent: input.seedFirstIntent ?? false,
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)

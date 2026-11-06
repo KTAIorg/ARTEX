@@ -328,12 +328,14 @@ func (d *DB) EditFindingTraffic(ctx context.Context, findingID, bindingID, versi
 type RecordFindingInput struct {
 	TaskID, ExplorationID, IntentID                      int64
 	VulnClass, Name, Severity, Summary, Evidence, Worker string
+	CVEID                                                string
 	AssetIDs                                             []int64
 }
 
 type RecordedFinding struct {
 	FindingID int64           `json:"finding_id,string"`
 	NodeID    int64           `json:"finding_node_id,string"`
+	CVEID     string          `json:"cve_id,omitempty"`
 	Traffic   *FindingTraffic `json:"traffic"`
 }
 
@@ -343,6 +345,15 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
+	cveID := strings.TrimSpace(in.CVEID)
+	if cveID != "" {
+		var err error
+		cveID, err = NormalizeCVEID(cveID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	in.CVEID = cveID
 	if in.TaskID > 0 {
 		var expID int64
 		if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1`, in.TaskID).Scan(&expID); err != nil {
@@ -351,6 +362,39 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 		if expID != in.ExplorationID {
 			return nil, errors.New("漏洞所属任务与探索记录不匹配")
 		}
+		rows, err := tx.Query(`SELECT cve_id FROM task_cves WHERE task_id=$1 ORDER BY position`, in.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		declared := []string{}
+		matched := false
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			declared = append(declared, id)
+			matched = matched || id == cveID
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if len(declared) == 0 {
+			if cveID != "" {
+				return nil, errors.New("存量任务未声明 CVE，不能为 finding 新增 CVE 归属")
+			}
+		} else if cveID == "" {
+			return nil, errors.New("任务已声明 CVE，report_finding 必须提供其中一个 CVE")
+		} else if !matched {
+			return nil, fmt.Errorf("CVE %s 不属于当前任务，可选值：%s", cveID, strings.Join(declared, ", "))
+		}
+	} else if cveID != "" {
+		return nil, errors.New("无任务的存量 finding 不能新增 CVE 归属")
 	}
 	if in.IntentID > 0 {
 		var ok bool
@@ -361,8 +405,12 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 			return nil, errors.New("intent_id 必须是本任务的意图（关联任务意图只读）")
 		}
 	}
-	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
-	out := &RecordedFinding{}
+	payloadMap := map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}}
+	if in.CVEID != "" {
+		payloadMap["cve_id"] = in.CVEID
+	}
+	payload, _ := json.Marshal(payloadMap)
+	out := &RecordedFinding{CVEID: in.CVEID}
 	if err := tx.QueryRow(`INSERT INTO exploration_nodes(exploration_id,kind,payload,priority,state,origin)
 VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string(payload), in.Worker).Scan(&out.NodeID); err != nil {
 		return nil, err
@@ -382,8 +430,8 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 		assets = []int64{}
 	}
 	raw, _ := json.Marshal(assets)
-	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,asset_ids)
-VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, string(raw)).Scan(&out.FindingID); err != nil {
+	if err := tx.QueryRow(`INSERT INTO findings(task_id,node_id,vulnclass,name,severity,summary,evidence,worker,cve_id,asset_ids)
+VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10) RETURNING id`, in.TaskID, out.NodeID, in.VulnClass, in.Name, in.Severity, in.Summary, in.Evidence, in.Worker, in.CVEID, string(raw)).Scan(&out.FindingID); err != nil {
 		return nil, err
 	}
 	// 在**同一事务**里登记一条推送事件：提交即保证「漏洞落库」与「推送任务存在」
