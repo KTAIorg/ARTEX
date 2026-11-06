@@ -34,12 +34,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import {
+  type AssetInterceptRuleInput,
   MAX_TASK_REMARK_RUNES,
   MAX_TASK_WORKER_COUNT,
   parseWorkerCountInput,
-  type AssetInterceptRuleInput,
   type TaskCategory,
   type TaskTemplate,
+  taskTemplateVariableNames,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -54,7 +55,10 @@ interface TemplateDraft {
 }
 
 // TemplateSeed 是「另存为模板」时从创建表单带入的初值。
-type TemplateSeed = Pick<TemplateDraft, "description" | "goal" | "remark" | "categoryID" | "interceptRules" | "workerCount">;
+type TemplateSeed = Pick<
+  TemplateDraft,
+  "description" | "goal" | "remark" | "categoryID" | "interceptRules" | "workerCount"
+>;
 
 interface TaskTemplateManagerProps {
   open: boolean;
@@ -229,7 +233,10 @@ function TaskTemplateManager({
         <SheetContent className="grid h-full w-full! max-w-none! grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:w-[48rem]! sm:max-w-[48rem]!">
           <SheetHeader className="border-b px-6 py-5">
             <SheetTitle>任务模板管理</SheetTitle>
-            <SheetDescription>模板保存描述、目标、备注、Worker 数量、分类与任务级拦截/允许规则；修改不会影响已经创建的任务。</SheetDescription>
+            <SheetDescription>
+              描述、目标和备注支持 {"{{"}变量名{"}}"}{" "}
+              占位符，应用模板时逐项填写；模板可重复使用，修改模板或覆盖字段不会影响已经创建的任务。
+            </SheetDescription>
           </SheetHeader>
           <div className="grid min-h-0 overflow-y-auto lg:grid-cols-[15rem_minmax(0,1fr)] lg:overflow-hidden">
             <div className="flex min-h-0 flex-col border-b p-3 lg:border-r lg:border-b-0">
@@ -402,6 +409,8 @@ interface TaskTemplateControlsProps {
   interceptRules?: AssetInterceptRuleInput[];
   workerCount?: string;
   selectedTemplateID: number | null;
+  variables: Record<string, string>;
+  onVariablesChange: (variables: Record<string, string>) => void;
   onSelectedTemplateIDChange: (id: number | null) => void;
   onApply: (template: TaskTemplate) => void;
   portalContainer?: React.RefObject<HTMLElement | null>;
@@ -415,6 +424,8 @@ export function TaskTemplateControls({
   interceptRules,
   workerCount = "",
   selectedTemplateID,
+  variables,
+  onVariablesChange,
   onSelectedTemplateIDChange,
   onApply,
   portalContainer,
@@ -445,6 +456,10 @@ export function TaskTemplateControls({
   const selectedTemplate = React.useMemo(
     () => templates.find((template) => template.id === selectedTemplateID) ?? null,
     [selectedTemplateID, templates],
+  );
+  const variableNames = React.useMemo(
+    () => (selectedTemplate ? taskTemplateVariableNames(selectedTemplate) : []),
+    [selectedTemplate],
   );
 
   React.useEffect(() => {
@@ -565,8 +580,24 @@ export function TaskTemplateControls({
           </ComboboxContent>
         </Combobox>
         <FieldDescription>
-          选择后会复制模板的描述、目标、备注、Worker 数量、分类与任务级规则，不与模板保持关联。
+          选择后预填模板默认上下文；变量由服务端在创建任务时渲染，修改字段只影响新任务。
         </FieldDescription>
+        {variableNames.length > 0 && (
+          <div className="grid gap-3 rounded-md border p-3">
+            <p className="font-medium text-sm">模板变量</p>
+            {variableNames.map((name) => (
+              <div className="grid gap-1.5" key={name}>
+                <FieldLabel htmlFor={`task-template-variable-${name}`}>{name}</FieldLabel>
+                <Input
+                  id={`task-template-variable-${name}`}
+                  value={variables[name] ?? ""}
+                  placeholder={`请输入 ${name}（必填）`}
+                  onChange={(event) => onVariablesChange({ ...variables, [name]: event.target.value })}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </Field>
 
       <AlertDialog
@@ -580,7 +611,9 @@ export function TaskTemplateControls({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>使用模板「{pendingTemplate?.name}」？</AlertDialogTitle>
-            <AlertDialogDescription>当前已填写的描述、目标、备注和 Worker 数量将被模板内容覆盖。</AlertDialogDescription>
+            <AlertDialogDescription>
+              当前已填写的描述、目标、备注和 Worker 数量将被模板内容覆盖。
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>

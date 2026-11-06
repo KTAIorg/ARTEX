@@ -1,0 +1,391 @@
+# x-backfill: partial
+# Covered: task-template CRUD and template-aware task creation.
+# Not covered: other ARTEX routes and the nested schedule configuration schema.
+openapi: 3.1.0
+info:
+  title: ARTEX API
+  version: 0.1.0
+  description: Partial, repository-maintained HTTP/JSON contract for ARTEX.
+servers:
+  - url: /api
+paths:
+  /task-templates:
+    get:
+      summary: List reusable task templates
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Templates ordered by most recent update
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates]
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskTemplate"
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Create a task template
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskTemplateInput"
+      responses:
+        "201":
+          description: Created template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplate"
+        "400":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /task-templates/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    patch:
+      summary: Update selected fields of a task template
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskTemplatePatch"
+      responses:
+        "200":
+          description: Updated template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskTemplate"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+    delete:
+      summary: Delete a task template without changing existing tasks
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deleted template id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+                    format: int64
+        "404":
+          $ref: "#/components/responses/Error"
+  /tasks:
+    post:
+      summary: Create a task directly or from a reusable template
+      description: |
+        Template placeholders use `{{variable_name}}`. Names start with a Unicode
+        letter or underscore and continue with Unicode letters, numbers, or
+        underscores. Every referenced variable must have a non-empty value;
+        unknown values and malformed placeholders are rejected with HTTP 400.
+        `template_overrides` changes only the new task and never mutates the template.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "201":
+          description: Created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid input, missing/unknown template variable, or malformed placeholder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Requested template does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    AssetInterceptRuleInput:
+      type: object
+      required: [enabled, action, kind, pattern, note]
+      properties:
+        enabled:
+          type: boolean
+        action:
+          type: string
+          enum: [block, allow]
+        kind:
+          type: string
+        pattern:
+          type: string
+        note:
+          type: string
+    TaskTemplate:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - goal
+        - remark
+        - intercept_rules
+        - worker_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        description:
+          type: string
+        goal:
+          type: string
+        remark:
+          type: string
+        category_id:
+          type: [integer, "null"]
+          format: int64
+        intercept_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetInterceptRuleInput"
+        worker_count:
+          type: integer
+          minimum: 0
+          maximum: 50
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    TaskTemplateInput:
+      type: object
+      required: [name, description, goal]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 16000
+        goal:
+          type: string
+          maxLength: 16000
+        remark:
+          type: string
+          maxLength: 2000
+        category_id:
+          type: [integer, "null"]
+          format: int64
+        intercept_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetInterceptRuleInput"
+        worker_count:
+          type: integer
+          minimum: 0
+          maximum: 50
+    TaskTemplatePatch:
+      type: object
+      minProperties: 1
+      description: At least one field is required; omitted fields remain unchanged.
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 16000
+        goal:
+          type: string
+          maxLength: 16000
+        remark:
+          type: string
+          maxLength: 2000
+        category_id:
+          type: [integer, "null"]
+          format: int64
+          description: Null explicitly clears the category.
+        intercept_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetInterceptRuleInput"
+        worker_count:
+          type: integer
+          minimum: 0
+          maximum: 50
+    TaskTemplateOverrides:
+      type: object
+      properties:
+        description:
+          type: string
+          minLength: 1
+        goal:
+          type: string
+          minLength: 1
+        remark:
+          type: string
+          maxLength: 2000
+        category_id:
+          type: [integer, "null"]
+          format: int64
+          description: Null explicitly clears the template default category.
+        intercept_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetInterceptRuleInput"
+        worker_count:
+          type: integer
+          minimum: 0
+          maximum: 50
+    CreateTaskRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          description: Required for direct creation; omit when using template defaults.
+        goal:
+          type: string
+          description: Required for direct creation; omit when using template defaults.
+        remark:
+          type: string
+        category_id:
+          type: [integer, "null"]
+          format: int64
+        template_id:
+          type: integer
+          format: int64
+          minimum: 1
+        template_variables:
+          type: object
+          additionalProperties:
+            type: string
+            minLength: 1
+        template_overrides:
+          $ref: "#/components/schemas/TaskTemplateOverrides"
+        llm_profile_id:
+          type: [integer, "null"]
+          format: int64
+        llm_profile_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+        source_task_ids:
+          type: array
+          items:
+            type: string
+        company_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+        timeout_seconds:
+          type: integer
+          minimum: 0
+        plan_heartbeat_seconds:
+          type: integer
+          minimum: 0
+        seed_first_intent:
+          type: boolean
+        coverage_enabled:
+          type: boolean
+        worker_count:
+          type: integer
+          minimum: 0
+          maximum: 50
+        intercept_rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetInterceptRuleInput"
+        schedule:
+          type: object
+          additionalProperties: true
+          description: Existing schedule payload; nested fields are outside this partial backfill.
+      anyOf:
+        - required: [description, goal]
+        - required: [template_id]
+    Task:
+      type: object
+      required: [id, description, goal, exploration_id, status, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        remark:
+          type: string
+        category_id:
+          type: [integer, "null"]
+          format: int64
+        description:
+          type: string
+        goal:
+          type: string
+        exploration_id:
+          type: integer
+          format: int64
+        status:
+          type: string
+        worker_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+      additionalProperties: true

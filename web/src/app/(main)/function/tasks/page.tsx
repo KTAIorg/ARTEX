@@ -179,11 +179,14 @@ import type {
   TaskArchiveState,
   TaskCategory,
   TaskStatus,
+  TaskTemplate,
+  TaskTemplateOverrides,
 } from "@/lib/types";
 import {
   MAX_TASK_REMARK_RUNES,
   MAX_TASK_WORKER_COUNT,
   parseWorkerCountInput,
+  taskTemplateVariableNames,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { clearVulnWorksetDraft, readVulnWorksetDraft, vuln } from "@/lib/vuln";
@@ -3893,6 +3896,8 @@ function CreateTaskSheet({
   const [selectedTemplateID, setSelectedTemplateID] = React.useState<
     number | null
   >(null);
+  const [appliedTemplate, setAppliedTemplate] = React.useState<TaskTemplate | null>(null);
+  const [templateVariables, setTemplateVariables] = React.useState<Record<string, string>>({});
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [companies, setCompanies] = React.useState<Company[]>([]);
   const [sourceTaskIDs, setSourceTaskIDs] = React.useState<string[]>([]);
@@ -3993,6 +3998,31 @@ function CreateTaskSheet({
       toast.error(`Worker 运行数量必须是 0-${MAX_TASK_WORKER_COUNT} 的整数`);
       return;
     }
+    if (appliedTemplate) {
+      const missing = taskTemplateVariableNames(appliedTemplate).filter(
+        (variable) => !(templateVariables[variable] ?? "").trim(),
+      );
+      if (missing.length > 0) {
+        toast.error(`请填写模板变量：${missing.join("、")}`);
+        return;
+      }
+    }
+    const normalizedInterceptRules = interceptRules
+      .map((r) => ({ ...r, pattern: r.pattern.trim() }))
+      .filter((r) => r.pattern !== "");
+    const templateOverrides: TaskTemplateOverrides = {};
+    if (appliedTemplate) {
+      if (description.trim() !== appliedTemplate.description) templateOverrides.description = description.trim();
+      if (goal.trim() !== appliedTemplate.goal) templateOverrides.goal = goal.trim();
+      if (remark.trim() !== (appliedTemplate.remark ?? "")) templateOverrides.remark = remark.trim();
+      if ((categoryID ?? null) !== (appliedTemplate.category_id ?? null)) {
+        templateOverrides.category_id = categoryID ?? null;
+      }
+      if (workerCountNum !== (appliedTemplate.worker_count ?? 0)) templateOverrides.worker_count = workerCountNum;
+      if (JSON.stringify(normalizedInterceptRules) !== JSON.stringify(appliedTemplate.intercept_rules ?? [])) {
+        templateOverrides.intercept_rules = normalizedInterceptRules;
+      }
+    }
     setCreating(true);
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
@@ -4004,6 +4034,9 @@ function CreateTaskSheet({
         categoryId: categoryID,
         description: description.trim(),
         goal: goal.trim(),
+        templateId: appliedTemplate?.id,
+        templateVariables: appliedTemplate ? templateVariables : undefined,
+        templateOverrides: appliedTemplate ? templateOverrides : undefined,
         llmProfileIds: llmProfileIDs.map(Number),
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
@@ -4013,9 +4046,7 @@ function CreateTaskSheet({
         coverageEnabled,
         workerCount: workerCountNum,
         schedule: scheduleEnabled ? { ...schedule, task_ids: [] } : undefined,
-        interceptRules: interceptRules
-          .map((r) => ({ ...r, pattern: r.pattern.trim() }))
-          .filter((r) => r.pattern !== ""),
+        interceptRules: normalizedInterceptRules,
       });
       toast.success("任务已创建");
       // 漏洞库/CVE「下发任务」带入的资产快照：任务建好后挂到新任务上；失败不阻塞任务创建结果。
@@ -4038,6 +4069,8 @@ function CreateTaskSheet({
       setDescription("");
       setGoal("");
       setSelectedTemplateID(null);
+      setAppliedTemplate(null);
+      setTemplateVariables({});
       setSourceTaskIDs([]);
       setCompanyIDs([]);
       setLLMProfileIDs([]);
@@ -4101,8 +4134,18 @@ function CreateTaskSheet({
               interceptRules={interceptRules}
               workerCount={workerCount}
               selectedTemplateID={selectedTemplateID}
-              onSelectedTemplateIDChange={setSelectedTemplateID}
+              variables={templateVariables}
+              onVariablesChange={setTemplateVariables}
+              onSelectedTemplateIDChange={(id) => {
+                setSelectedTemplateID(id);
+                if (id == null) {
+                  setAppliedTemplate(null);
+                  setTemplateVariables({});
+                }
+              }}
               onApply={(template) => {
+                setAppliedTemplate(template);
+                setTemplateVariables({});
                 setDescription(template.description);
                 setGoal(template.goal);
                 setRemark(template.remark ?? "");

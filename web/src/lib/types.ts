@@ -84,6 +84,29 @@ export interface TaskTemplate {
   updated_at: string;
 }
 
+export interface TaskTemplateOverrides {
+  description?: string;
+  goal?: string;
+  remark?: string;
+  category_id?: number | null;
+  intercept_rules?: AssetInterceptRuleInput[];
+  worker_count?: number;
+}
+
+export function taskTemplateVariableNames(template: Pick<TaskTemplate, "description" | "goal" | "remark">): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const text of [template.description, template.goal, template.remark ?? ""]) {
+    for (const match of text.matchAll(/\{\{\s*([\p{L}_][\p{L}\p{N}_]{0,63})\s*\}\}/gu)) {
+      if (!seen.has(match[1])) {
+        seen.add(match[1]);
+        names.push(match[1]);
+      }
+    }
+  }
+  return names;
+}
+
 export interface DeleteTaskOptions {
   delete_assets: boolean;
   delete_traffic: boolean;

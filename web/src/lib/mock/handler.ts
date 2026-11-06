@@ -34,7 +34,7 @@ import type {
   TrafficEvidenceRole,
   TrafficEvidenceSnapshot,
 } from "../types";
-import { MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT } from "../types";
+import { MAX_TASK_REMARK_RUNES, MAX_TASK_WORKER_COUNT, taskTemplateVariableNames } from "../types";
 import * as D from "./data";
 
 const delay = (ms = 120) => new Promise((r) => setTimeout(r, ms));
@@ -1236,23 +1236,84 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const sourceTaskIDs = [...((b.source_task_ids as string[] | undefined) ?? [])];
     const companyIDs = [...new Set((b.company_ids as number[] | undefined) ?? [])];
     const name = mockStringField(b.name, "任务名称");
-    const description = mockStringField(b.description, "任务描述");
-    const goal = mockStringField(b.goal, "任务目标");
+    let description = mockStringField(b.description, "任务描述");
+    let goal = mockStringField(b.goal, "任务目标");
+    let remark = mockRemark(b.remark);
+    let categoryValue = b.category_id;
+    let workerCountValue = b.worker_count;
+    const templateID = b.template_id == null ? null : mockIntegerField(b.template_id, "template_id");
+    const template = templateID == null ? undefined : mockTaskTemplates.find((item) => item.id === templateID);
+    if (templateID != null && (templateID <= 0 || !template)) throw new Error("任务模板不存在或无效");
+    if (template) {
+      if (
+        b.template_variables != null &&
+        (typeof b.template_variables !== "object" || Array.isArray(b.template_variables))
+      ) {
+        throw new Error("template_variables 必须是对象");
+      }
+      const variables = (b.template_variables ?? {}) as Record<string, unknown>;
+      const required = taskTemplateVariableNames(template);
+      const requiredNames = new Set(required);
+      const normalized = new Map<string, string>();
+      for (const [variable, value] of Object.entries(variables)) {
+        if (!/^[\p{L}_][\p{L}\p{N}_]{0,63}$/u.test(variable)) throw new Error(`非法模板变量名：${variable}`);
+        if (!requiredNames.has(variable)) throw new Error(`未知模板变量：${variable}`);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`模板变量 ${variable} 不能为空`);
+        normalized.set(variable, value.trim());
+      }
+      const missing = required.filter((variable) => !normalized.has(variable));
+      if (missing.length > 0) throw new Error(`缺少模板变量：${missing.join("、")}`);
+      const render = (text: string) => {
+        const remainder = text.replaceAll(/\{\{\s*([\p{L}_][\p{L}\p{N}_]{0,63})\s*\}\}/gu, "");
+        if (remainder.includes("{{") || remainder.includes("}}")) throw new Error("模板包含畸形占位符");
+        return text.replaceAll(
+          /\{\{\s*([\p{L}_][\p{L}\p{N}_]{0,63})\s*\}\}/gu,
+          (_slot, variable: string) => normalized.get(variable) ?? "",
+        );
+      };
+      description = render(template.description);
+      goal = render(template.goal);
+      remark = mockRemark(render(template.remark ?? ""));
+      categoryValue = template.category_id;
+      workerCountValue = template.worker_count;
+      if (b.template_overrides != null) {
+        if (typeof b.template_overrides !== "object" || Array.isArray(b.template_overrides)) {
+          throw new Error("template_overrides 必须是对象");
+        }
+        const overrides = b.template_overrides as Record<string, unknown>;
+        if (Object.hasOwn(overrides, "description")) {
+          description = mockStringField(overrides.description, "任务描述").trim();
+          if (!description) throw new Error("任务描述不能为空");
+        }
+        if (Object.hasOwn(overrides, "goal")) {
+          goal = mockStringField(overrides.goal, "任务目标").trim();
+          if (!goal) throw new Error("任务目标不能为空");
+        }
+        if (Object.hasOwn(overrides, "remark")) remark = mockRemark(overrides.remark);
+        if (Object.hasOwn(overrides, "category_id")) categoryValue = overrides.category_id;
+        if (Object.hasOwn(overrides, "worker_count")) workerCountValue = overrides.worker_count;
+      }
+    } else if (
+      (b.template_variables != null && Object.keys(b.template_variables).length > 0) ||
+      b.template_overrides != null
+    ) {
+      throw new Error("使用模板变量或覆盖字段时必须提供 template_id");
+    }
     if (companyIDs.some((companyID) => !mockCompanies.some((company) => company.id === companyID))) {
       throw new Error("关联企业不存在或无效");
     }
-    const categoryID = mockIntegerField(b.category_id, "category_id") ?? undefined;
+    const categoryID = mockIntegerField(categoryValue, "category_id") ?? undefined;
     const category = categoryID === undefined ? undefined : mockTaskCategories.find((item) => item.id === categoryID);
     if (categoryID !== undefined && !category) throw new Error("任务分类不存在");
     const created: Task = {
       id,
       name,
-      remark: mockRemark(b.remark),
+      remark,
       category_id: category?.id,
       category_name: category?.name,
       description: description || "新任务",
       goal,
-      worker_count: mockWorkerCount(b.worker_count),
+      worker_count: mockWorkerCount(workerCountValue),
       status: "created",
       created_at: now.toISOString(),
       created_unix: Math.floor(now.getTime() / 1000),
