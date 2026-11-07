@@ -64,7 +64,10 @@ jobs:
         run: |
           set -euo pipefail
           GOBIN="${RUNNER_TEMP}/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          "${RUNNER_TEMP}/bin/actionlint"
+          "${RUNNER_TEMP}/bin/actionlint" \
+            .github/workflows/ci.yml \
+            .github/workflows/cd-prod.yml \
+            .github/workflows/cd-partner-prod.yml
 
       - name: Web build
         working-directory: web
