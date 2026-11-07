@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { vuln } from "@/lib/vuln";
 
+import { VulnCveSyncControls } from "../_components/cve-sync-controls";
 import { VulnCvesPanel } from "../_components/panels";
 import { VulnCvesCatalogPanel } from "../_components/panels-catalog";
 
@@ -48,6 +49,8 @@ function VulnCvesContent() {
     const value = new URLSearchParams(window.location.search).get("tab");
     if (value === "focus" || value === "catalog") setTab(value);
   }, []);
+
+  const refreshCatalog = React.useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const handleTabChange = (value: string) => {
     setTab(value);
@@ -94,6 +97,7 @@ function VulnCvesContent() {
           <p className="text-muted-foreground text-xs">
             全量目录：NVD 同步的全量 CVE 字典（28 万+ 条），仅元数据、无暴露面。
           </p>
+          <VulnCveSyncControls onSynced={refreshCatalog} />
           <VulnCvesCatalogPanel refreshKey={refreshKey} />
         </TabsContent>
       </Tabs>

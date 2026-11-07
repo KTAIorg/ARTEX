@@ -1,0 +1,42 @@
+# ARTEX Web PR 验证：只执行测试、类型检查与静态构建，不发布、不部署。
+# Actions 基线于 2026-11-07 通过 GitHub releases/latest 核实：checkout v7.0.1、setup-node v7.1.0。
+name: web-check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-check-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: test-typecheck-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 安装锁定依赖
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: 测试
+        working-directory: web
+        run: npm test
+      - name: 类型检查
+        working-directory: web
+        run: npm run typecheck
+      - name: 静态构建
+        working-directory: web
+        run: npm run build:static

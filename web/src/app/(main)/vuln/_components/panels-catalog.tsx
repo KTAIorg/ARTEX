@@ -144,7 +144,7 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
 
   const reqRef = React.useRef(0);
 
-  // 年份桶懒加载一次（下拉数据源）；失败不阻塞主列表，仅少一个筛选项。
+  // 年份桶随目录刷新（含同步完成）；失败不阻塞主列表，仅少一个筛选项。
   React.useEffect(() => {
     let cancelled = false;
     vuln
@@ -158,7 +158,7 @@ export function VulnCvesCatalogPanel({ refreshKey }: { refreshKey: number }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   const applyFilters = () => {
     const y = Number.parseInt(fYear, 10);
