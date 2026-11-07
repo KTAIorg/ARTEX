@@ -167,7 +167,11 @@ import {
   type SortDirection,
   useStoredSortPreference,
 } from "@/lib/sort-preference";
-import { reconcileAppliedTaskTemplate } from "@/lib/task-template-state";
+import {
+  buildTaskTemplateCreatePayload,
+  reconcileAppliedTaskTemplate,
+  taskTemplateFormFields,
+} from "@/lib/task-template-state";
 import type {
   AssetInterceptRuleInput,
   ChatAttachment,
@@ -181,7 +185,6 @@ import type {
   TaskCategory,
   TaskStatus,
   TaskTemplate,
-  TaskTemplateOverrides,
 } from "@/lib/types";
 import {
   MAX_TASK_REMARK_RUNES,
@@ -4008,22 +4011,12 @@ function CreateTaskSheet({
         return;
       }
     }
-    const normalizedInterceptRules = interceptRules
-      .map((r) => ({ ...r, pattern: r.pattern.trim() }))
-      .filter((r) => r.pattern !== "");
-    const templateOverrides: TaskTemplateOverrides = {};
-    if (appliedTemplate) {
-      if (description.trim() !== appliedTemplate.description) templateOverrides.description = description.trim();
-      if (goal.trim() !== appliedTemplate.goal) templateOverrides.goal = goal.trim();
-      if (remark.trim() !== (appliedTemplate.remark ?? "")) templateOverrides.remark = remark.trim();
-      if ((categoryID ?? null) !== (appliedTemplate.category_id ?? null)) {
-        templateOverrides.category_id = categoryID ?? null;
-      }
-      if (workerCountNum !== (appliedTemplate.worker_count ?? 0)) templateOverrides.worker_count = workerCountNum;
-      if (JSON.stringify(normalizedInterceptRules) !== JSON.stringify(appliedTemplate.intercept_rules ?? [])) {
-        templateOverrides.intercept_rules = normalizedInterceptRules;
-      }
-    }
+    const templatePayload = buildTaskTemplateCreatePayload(
+      appliedTemplate,
+      templateVariables,
+      { description, goal, remark, categoryID, workerCount, interceptRules },
+      workerCountNum,
+    );
     setCreating(true);
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
@@ -4031,13 +4024,7 @@ function CreateTaskSheet({
         Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
       const task = await api.createTask({
         name: name.trim(),
-        remark: remark.trim(),
-        categoryId: categoryID,
-        description: description.trim(),
-        goal: goal.trim(),
-        templateId: appliedTemplate?.id,
-        templateVariables: appliedTemplate ? templateVariables : undefined,
-        templateOverrides: appliedTemplate ? templateOverrides : undefined,
+        ...templatePayload,
         llmProfileIds: llmProfileIDs.map(Number),
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
@@ -4045,9 +4032,7 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
-        workerCount: workerCountNum,
         schedule: scheduleEnabled ? { ...schedule, task_ids: [] } : undefined,
-        interceptRules: normalizedInterceptRules,
       });
       toast.success("任务已创建");
       // 漏洞库/CVE「下发任务」带入的资产快照：任务建好后挂到新任务上；失败不阻塞任务创建结果。
@@ -4145,22 +4130,33 @@ function CreateTaskSheet({
                 }
               }}
               onApply={(template) => {
+                const fields = taskTemplateFormFields(template);
                 setAppliedTemplate(template);
                 setTemplateVariables({});
-                setDescription(template.description);
-                setGoal(template.goal);
-                setRemark(template.remark ?? "");
-                setCategoryID(template.category_id ?? undefined);
-                setInterceptRules(template.intercept_rules ?? []);
-                setWorkerCount(
-                  template.worker_count ? String(template.worker_count) : "",
-                );
+                setDescription(fields.description);
+                setGoal(fields.goal);
+                setRemark(fields.remark);
+                setCategoryID(fields.categoryID);
+                setInterceptRules(fields.interceptRules);
+                setWorkerCount(fields.workerCount);
                 setUploadCount(0);
               }}
               onAppliedTemplateUpdated={(template) => {
-                const synced = reconcileAppliedTaskTemplate(appliedTemplate, template, templateVariables);
+                const synced = reconcileAppliedTaskTemplate(
+                  appliedTemplate,
+                  template,
+                  templateVariables,
+                  { description, goal, remark, categoryID, workerCount, interceptRules },
+                );
                 setAppliedTemplate(synced.template);
                 setTemplateVariables(synced.variables);
+                setDescription(synced.fields.description);
+                setGoal(synced.fields.goal);
+                setRemark(synced.fields.remark);
+                setCategoryID(synced.fields.categoryID);
+                setInterceptRules(synced.fields.interceptRules);
+                setWorkerCount(synced.fields.workerCount);
+                setUploadCount(0);
               }}
               portalContainer={sheetContentRef}
             />

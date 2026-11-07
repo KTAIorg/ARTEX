@@ -1299,6 +1299,10 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     ) {
       throw new Error("使用模板变量或覆盖字段时必须提供 template_id");
     }
+    description = description.trim();
+    goal = goal.trim();
+    if (!description) throw new Error("description 为必填");
+    if (!goal) throw new Error("goal 为必填");
     if (companyIDs.some((companyID) => !mockCompanies.some((company) => company.id === companyID))) {
       throw new Error("关联企业不存在或无效");
     }
@@ -1311,7 +1315,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       remark,
       category_id: category?.id,
       category_name: category?.name,
-      description: description || "新任务",
+      description,
       goal,
       worker_count: mockWorkerCount(workerCountValue),
       status: "created",
