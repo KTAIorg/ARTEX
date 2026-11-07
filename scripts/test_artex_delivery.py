@@ -61,7 +61,7 @@ class WorkflowDeliveryTest(unittest.TestCase):
         for required in (
             "npm ci --no-audit --no-fund",
             "npm run build:static",
-            'go test -p=1 "${packages[@]}"',
+            "go test -p=1 -count=1 -skip '^TestStaticSedGeneratedInputAndBounds$' \"${packages[@]}\"",
             "go test ./server -run '^TestHealthReportsFullBuildRevision$' -count=1",
             "github.com/Autumn-27/artex/agent|github.com/Autumn-27/artex/db|github.com/Autumn-27/artex/server",
             "go vet ./...",

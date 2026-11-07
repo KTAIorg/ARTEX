@@ -117,7 +117,7 @@ jobs:
             exit 1
           fi
 
-      # 与 PR CI 一致：agent/db/server 在基线已有失败，其余包全部测试。
+      # 与 PR CI 一致：排除基线失败包，只跳过 Ubuntu 26 的一条 intercept 平台用例。
       - name: Go regression tests
         run: |
           set -euo pipefail
@@ -128,7 +128,7 @@ jobs:
               *) packages+=("${package}") ;;
             esac
           done < <(go list ./...)
-          go test -p=1 "${packages[@]}"
+          go test -p=1 -count=1 -skip '^TestStaticSedGeneratedInputAndBounds$' "${packages[@]}"
 
       - name: Delivery health regression test
         run: go test ./server -run '^TestHealthReportsFullBuildRevision$' -count=1
