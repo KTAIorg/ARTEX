@@ -1,0 +1,185 @@
+# 仅晋级主站成功 receipt 绑定的不可变制品；禁止重新构建。
+# Action 主版本基线：2026-11-07 实查 GitHub Releases。
+name: CD · Partner Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "已成功验收主站的 CD · Production run ID"
+        required: true
+        type: string
+      source_run_attempt:
+        description: "可选：run attempt；同名多次成功 attempt 必须明确指定"
+        required: false
+        type: string
+      image:
+        description: "oci.ktyun.cc/ktaiorg/artex:prod-sha-<short10> 或同仓库 @sha256:<digest>"
+        required: true
+        type: string
+      source_commit:
+        description: "制品对应的完整 40 位 main merge SHA"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: artex-production
+  cancel-in-progress: false
+
+jobs:
+  promote-partner:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-partner
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify source commit is on main
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::source_commit 必须是完整小写 SHA"
+            exit 1
+          }
+          git cat-file -e "${SOURCE_COMMIT}^{commit}"
+          git merge-base --is-ancestor "${SOURCE_COMMIT}" HEAD || {
+            echo "::error::制品 commit 不在 main，拒绝晋级"
+            exit 1
+          }
+
+      - name: Bind main receipt, resolve artifact and verify partner deployment
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          CD_WEBHOOK_URL: ${{ vars.CD_WEBHOOK_URL }}
+          CD_TLS_CA: ${{ secrets.CD_TLS_CA }}
+          CD_MAIN_VERIFY_BASE_URL: ${{ vars.CD_MAIN_VERIFY_BASE_URL }}
+          CD_PARTNER_VERIFY_BASE_URL: ${{ vars.CD_PARTNER_VERIFY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${CD_WEBHOOK_URL:?CD_WEBHOOK_URL repository variable is required}"
+          : "${CD_TLS_CA:?CD_TLS_CA repository secret is required}"
+          : "${CD_MAIN_VERIFY_BASE_URL:?CD_MAIN_VERIFY_BASE_URL repository variable is required}"
+          : "${CD_PARTNER_VERIFY_BASE_URL:?CD_PARTNER_VERIFY_BASE_URL repository variable is required}"
+          python3 - "${CD_WEBHOOK_URL}" <<'PY'
+          from urllib.parse import urlsplit
+          import sys
+
+          url = urlsplit(sys.argv[1])
+          if (url.scheme != "https" or url.path != "/deploy" or url.query
+                  or url.fragment or url.username or url.password):
+              raise SystemExit("CD_WEBHOOK_URL must be an HTTPS /deploy URL without userinfo")
+          PY
+          ca_file=$(mktemp "${RUNNER_TEMP}/cd-webhook-ca.XXXXXX.pem")
+          CA_FILE="${ca_file}" python3 -c 'import os; from pathlib import Path; Path(os.environ["CA_FILE"]).write_text(os.environ["CD_TLS_CA"] + "\n", encoding="utf-8")'
+          trap 'rm -f "${ca_file}"' EXIT
+
+          OIDC="$(curl --silent --show-error --fail \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zot" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          TOK="$(curl --silent --show-error --fail \
+            --user "x-access-token:${OIDC}" \
+            "https://oci.ktyun.cc/zot/auth/token?service=oci.ktyun.cc&scope=repository:ktaiorg/artex:pull" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
+          [ -n "${TOK}" ] || { echo "::error::Zot 换票失败"; exit 1; }
+          echo "::add-mask::${OIDC}"
+          echo "::add-mask::${TOK}"
+          export REGISTRY_TOKEN="${TOK}"
+
+          resolved="${RUNNER_TEMP}/artex-resolved-image.json"
+          bound_receipt="${RUNNER_TEMP}/artex-main-bound-receipt.json"
+          python3 scripts/resolve_artex_image.py \
+            --image "${INPUT_IMAGE}" \
+            --source-commit "${SOURCE_COMMIT}" \
+            --output-file "${resolved}"
+          fetch_args=(
+            --workflow cd-prod.yml
+            --run-id "${SOURCE_RUN_ID}"
+            --source-commit "${SOURCE_COMMIT}"
+            --target artex-main
+            --resolved-receipt "${resolved}"
+            --output-file "${bound_receipt}"
+          )
+          if [ -n "${SOURCE_RUN_ATTEMPT}" ]; then
+            fetch_args+=(--run-attempt "${SOURCE_RUN_ATTEMPT}")
+          fi
+          scripts/fetch_artex_receipt.sh "${fetch_args[@]}"
+          immutable_ref=$(jq -er '.image_ref' "${bound_receipt}")
+
+          python3 scripts/verify_artex_deployment.py \
+            --base-url "${CD_MAIN_VERIFY_BASE_URL}" \
+            --ca-file "${ca_file}" \
+            --expected-commit "${SOURCE_COMMIT}" \
+            --timeout 60 \
+            --interval 5
+
+          body=$(jq -cn --arg target "artex-partner" --arg image "${immutable_ref}" '{target: $target, image: $image}')
+          if ! code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --cacert "${ca_file}" --max-time 30 -X POST "${CD_WEBHOOK_URL}" \
+            -H "Authorization: Bearer ${OIDC}" \
+            -H 'Content-Type: application/json' --data "${body}"); then
+            echo "::error::CD webhook TLS 调用失败"
+            exit 1
+          fi
+          echo "CD webhook (artex-partner): ${code}"
+          [ "$code" = "202" ] || { echo "::error::CD webhook 非 202"; exit 1; }
+          python3 scripts/verify_artex_deployment.py \
+            --base-url "${CD_PARTNER_VERIFY_BASE_URL}" \
+            --ca-file "${ca_file}" \
+            --expected-commit "${SOURCE_COMMIT}" \
+            --timeout 300 \
+            --interval 5
+
+      - name: Create partner deployment receipt after health verification
+        run: |
+          set -euo pipefail
+          jq \
+            --arg deployment_run_id "${GITHUB_RUN_ID}" \
+            --arg deployment_run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '.target = "artex-partner"
+             | .deployment_workflow = "cd-partner-prod.yml"
+             | .deployment_run_id = $deployment_run_id
+             | .deployment_run_attempt = $deployment_run_attempt
+             | .verification = {status: "success"}' \
+            "${RUNNER_TEMP}/artex-main-bound-receipt.json" \
+            > "${RUNNER_TEMP}/artex-partner-receipt.json"
+
+      - name: Upload partner deployment receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: artex-partner-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_commit }}
+          path: ${{ runner.temp }}/artex-partner-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          {
+            echo "### CD · Partner Production"
+            echo "- source revision: \`${{ inputs.source_commit }}\`"
+            echo "- source main run: \`${{ inputs.source_run_id }}\`"
+            echo "- input image: \`${{ inputs.image }}\`"
+            echo "- main receipt binding: passed before promotion"
+            echo "- verified target: \`artex-partner\`"
+            echo "- rebuild: not permitted"
+          } >> "${GITHUB_STEP_SUMMARY}"

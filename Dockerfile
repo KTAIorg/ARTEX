@@ -8,10 +8,19 @@
 # 本地手动构建镜像时，先自行准备二进制：
 #   cd web && npm run build:static && cd ..
 #   cp -r web/out server/webui/dist
-#   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui -o dist/amd64/artex ./cmd/artex
-#   docker build -t artex:local .
+#   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui \
+#     -ldflags "-s -w -buildid= -X main.version=$(git rev-parse HEAD)" \
+#     -o dist/amd64/artex ./cmd/artex
+#   docker build --build-arg VERSION="$(git rev-parse HEAD)" \
+#     --build-arg COMMIT="$(git rev-parse HEAD)" -t artex:local .
 FROM python:3.12-slim-bookworm
 ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node 从 NodeSource 装 22.x，与前端构建使用的主版本一致。
 # 细拆层（每层压缩后 <50MB）：oci.ktyun.cc 走 Cloudflare 免费套餐，
