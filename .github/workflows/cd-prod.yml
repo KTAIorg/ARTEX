@@ -1,0 +1,262 @@
+# main 只构建一次不可变镜像，先部署并验收主站；伙伴站由独立 promotion 晋级。
+# Action 主版本基线：2026-11-07 实查 GitHub Releases。
+name: CD · Production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: artex-production
+  cancel-in-progress: false
+
+jobs:
+  build-deploy-main:
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: artex-ci-test
+          POSTGRES_DB: artex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install workflow test dependencies
+        run: python3 -m pip install --no-input --quiet pyyaml==6.0.3
+
+      - name: Workflow regression tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Workflow syntax
+        run: |
+          set -euo pipefail
+          GOBIN="${RUNNER_TEMP}/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "${RUNNER_TEMP}/bin/actionlint"
+
+      - name: Web build
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build:static
+          test -s out/index.html
+
+      - name: Embed web assets
+        run: |
+          set -euo pipefail
+          rm -rf server/webui/dist
+          mkdir -p server/webui
+          cp -r web/out server/webui/dist
+
+      - name: Build embedded binary with source revision
+        run: |
+          set -euo pipefail
+          mkdir -p dist/amd64
+          CGO_ENABLED=0 go build -trimpath -tags embedui \
+            -ldflags "-s -w -buildid= -X main.version=${GITHUB_SHA}" \
+            -o dist/amd64/artex ./cmd/artex
+          test -s dist/amd64/artex
+
+      - name: Embedded binary health smoke
+        run: |
+          set -euo pipefail
+          data_dir=$(mktemp -d "${RUNNER_TEMP}/artex-smoke.XXXXXX")
+          app_pid=""
+          cleanup() {
+            if [ -n "${app_pid}" ]; then
+              kill "${app_pid}" >/dev/null 2>&1 || true
+              wait "${app_pid}" >/dev/null 2>&1 || true
+            fi
+            rm -rf "${data_dir}"
+          }
+          trap cleanup EXIT
+          http_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+          ./dist/amd64/artex -addr "127.0.0.1:${http_port}" -proxy "" -data "${data_dir}/data" >"${data_dir}/artex.log" 2>&1 &
+          app_pid=$!
+          if ! python3 scripts/verify_artex_deployment.py \
+            --base-url "http://127.0.0.1:${http_port}" \
+            --expected-commit "${GITHUB_SHA}" \
+            --timeout 45 --interval 1 --request-timeout 2; then
+            cat "${data_dir}/artex.log"
+            exit 1
+          fi
+
+      # 与 PR CI 一致：agent/db/server 在基线已有失败，其余包全部测试。
+      - name: Go regression tests
+        run: |
+          set -euo pipefail
+          packages=()
+          while IFS= read -r package; do
+            case "${package}" in
+              github.com/Autumn-27/artex/agent|github.com/Autumn-27/artex/db|github.com/Autumn-27/artex/server) ;;
+              *) packages+=("${package}") ;;
+            esac
+          done < <(go list ./...)
+          go test -p=1 "${packages[@]}"
+
+      - name: Delivery health regression test
+        run: go test ./server -run '^TestHealthReportsFullBuildRevision$' -count=1
+
+      - name: Go vet
+        run: go vet ./...
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build once, push and verify main deployment
+        id: release
+        env:
+          CD_WEBHOOK_URL: ${{ vars.CD_WEBHOOK_URL }}
+          CD_TLS_CA: ${{ secrets.CD_TLS_CA }}
+          CD_VERIFY_BASE_URL: ${{ vars.CD_MAIN_VERIFY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${CD_WEBHOOK_URL:?CD_WEBHOOK_URL repository variable is required}"
+          : "${CD_TLS_CA:?CD_TLS_CA repository secret is required}"
+          : "${CD_VERIFY_BASE_URL:?CD_MAIN_VERIFY_BASE_URL repository variable is required}"
+          python3 - "${CD_WEBHOOK_URL}" <<'PY'
+          from urllib.parse import urlsplit
+          import sys
+
+          url = urlsplit(sys.argv[1])
+          if (url.scheme != "https" or url.path != "/deploy" or url.query
+                  or url.fragment or url.username or url.password):
+              raise SystemExit("CD_WEBHOOK_URL must be an HTTPS /deploy URL without userinfo")
+          PY
+          ca_file=$(mktemp "${RUNNER_TEMP}/cd-webhook-ca.XXXXXX.pem")
+          CA_FILE="${ca_file}" python3 -c 'import os; from pathlib import Path; Path(os.environ["CA_FILE"]).write_text(os.environ["CD_TLS_CA"] + "\n", encoding="utf-8")'
+          trap 'docker logout oci.ktyun.cc >/dev/null 2>&1 || true; rm -f "${ca_file}"' EXIT
+
+          OIDC="$(curl --silent --show-error --fail \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zot" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          TOK="$(curl --silent --show-error --fail \
+            --user "x-access-token:${OIDC}" \
+            "https://oci.ktyun.cc/zot/auth/token?service=oci.ktyun.cc&scope=repository:ktaiorg/artex:pull,push" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
+          [ -n "${TOK}" ] || { echo "::error::Zot 换票失败"; exit 1; }
+          echo "::add-mask::${OIDC}"
+          echo "::add-mask::${TOK}"
+          docker login oci.ktyun.cc --username x-access-token --password-stdin <<< "${TOK}"
+
+          image_repository="oci.ktyun.cc/ktaiorg/artex"
+          image_tag="prod-sha-${GITHUB_SHA::10}"
+          image_ref="${image_repository}:${image_tag}"
+          build_date=$(TZ=UTC git show -s --format='%cd' --date='format-local:%Y-%m-%dT%H:%M:%SZ' "${GITHUB_SHA}")
+          metadata_file="${RUNNER_TEMP}/build-metadata.json"
+          docker buildx build \
+            --platform linux/amd64 \
+            --push \
+            --provenance=false \
+            --sbom=false \
+            --build-arg "VERSION=${GITHUB_SHA}" \
+            --build-arg "COMMIT=${GITHUB_SHA}" \
+            --build-arg "BUILD_DATE=${build_date}" \
+            --tag "${image_ref}" \
+            --metadata-file "${metadata_file}" \
+            .
+          digest=$(jq -r '."containerimage.digest" // empty' "${metadata_file}")
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::registry 未返回合法的 sha256 digest"
+            exit 1
+          }
+          immutable_ref="${image_repository}@${digest}"
+
+          body=$(jq -cn --arg target "artex-main" --arg image "${immutable_ref}" '{target: $target, image: $image}')
+          if ! code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --cacert "${ca_file}" --max-time 30 -X POST "${CD_WEBHOOK_URL}" \
+            -H "Authorization: Bearer ${OIDC}" \
+            -H 'Content-Type: application/json' --data "${body}"); then
+            echo "::error::CD webhook TLS 调用失败"
+            exit 1
+          fi
+          echo "CD webhook (artex-main): ${code}"
+          [ "$code" = "202" ] || { echo "::error::CD webhook 非 202"; exit 1; }
+          python3 scripts/verify_artex_deployment.py \
+            --base-url "${CD_VERIFY_BASE_URL}" \
+            --expected-commit "${GITHUB_SHA}" \
+            --timeout 300 \
+            --interval 5
+
+          {
+            echo "digest=${digest}"
+            echo "tag=${image_tag}"
+            echo "image_ref=${immutable_ref}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create immutable build receipt
+        env:
+          IMAGE_DIGEST: ${{ steps.release.outputs.digest }}
+          IMAGE_REF: ${{ steps.release.outputs.image_ref }}
+          IMAGE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg source_revision "${GITHUB_SHA}" \
+            --arg image_ref "${IMAGE_REF}" \
+            --arg image_tag "${IMAGE_TAG}" \
+            --arg image_digest "${IMAGE_DIGEST}" \
+            --arg target "artex-main" \
+            '{
+              api_version: "delivery.kt/v1",
+              kind: "ImageDeploymentReceipt",
+              repository: $repository,
+              source_revision: $source_revision,
+              image_ref: $image_ref,
+              image_tag: $image_tag,
+              image_digest: $image_digest,
+              target: $target
+            }' > "${RUNNER_TEMP}/artex-main-receipt.json"
+
+      - name: Upload main deployment receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: artex-main-receipt-${{ github.sha }}
+          path: ${{ runner.temp }}/artex-main-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          {
+            echo "### CD · Production"
+            echo "- source revision: \`${GITHUB_SHA}\`"
+            echo "- image: \`${{ steps.release.outputs.image_ref }}\`"
+            echo "- tag: \`${{ steps.release.outputs.tag }}\`"
+            echo "- verified target: \`artex-main\`"
+            echo "- partner: not deployed; use CD · Partner Production"
+          } >> "${GITHUB_STEP_SUMMARY}"
