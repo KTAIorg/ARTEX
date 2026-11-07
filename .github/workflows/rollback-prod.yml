@@ -1,0 +1,204 @@
+# 按历史成功部署 receipt 回滚单一目标；禁止重新构建或输入未绑定 digest。
+# Action 主版本基线：2026-11-07 实查 GitHub Releases。
+name: Rollback · Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "回滚目标"
+        required: true
+        type: choice
+        options:
+          - artex-main
+          - artex-partner
+      receipt_run_id:
+        description: "目标历史成功部署 run ID（main 用 CD run，partner 用 promotion run）"
+        required: true
+        type: string
+      receipt_run_attempt:
+        description: "可选：历史部署 run attempt"
+        required: false
+        type: string
+      source_commit:
+        description: "历史 receipt 对应的完整 40 位 main merge SHA"
+        required: true
+        type: string
+      image:
+        description: "历史 receipt 对应的同仓库 tag 或 digest；将与 registry 和 receipt 交叉校验"
+        required: true
+        type: string
+      reason:
+        description: "回滚原因（写入回滚 receipt）"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: artex-production
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.target == 'artex-main' && 'production' || 'production-partner' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify source commit is on main
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "${SOURCE_COMMIT}^{commit}"
+          git merge-base --is-ancestor "${SOURCE_COMMIT}" HEAD
+
+      - name: Bind historical receipt, deploy digest and verify rollback health
+        env:
+          TARGET: ${{ inputs.target }}
+          RECEIPT_RUN_ID: ${{ inputs.receipt_run_id }}
+          RECEIPT_RUN_ATTEMPT: ${{ inputs.receipt_run_attempt }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          INPUT_IMAGE: ${{ inputs.image }}
+          GH_TOKEN: ${{ github.token }}
+          CD_WEBHOOK_URL: ${{ vars.CD_WEBHOOK_URL }}
+          CD_TLS_CA: ${{ secrets.CD_TLS_CA }}
+          CD_MAIN_VERIFY_BASE_URL: ${{ vars.CD_MAIN_VERIFY_BASE_URL }}
+          CD_PARTNER_VERIFY_BASE_URL: ${{ vars.CD_PARTNER_VERIFY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${CD_WEBHOOK_URL:?CD_WEBHOOK_URL repository variable is required}"
+          : "${CD_TLS_CA:?CD_TLS_CA repository secret is required}"
+          : "${CD_MAIN_VERIFY_BASE_URL:?CD_MAIN_VERIFY_BASE_URL repository variable is required}"
+          : "${CD_PARTNER_VERIFY_BASE_URL:?CD_PARTNER_VERIFY_BASE_URL repository variable is required}"
+          case "${TARGET}" in
+            artex-main)
+              source_workflow=cd-prod.yml
+              verify_url="${CD_MAIN_VERIFY_BASE_URL}"
+              ;;
+            artex-partner)
+              source_workflow=cd-partner-prod.yml
+              verify_url="${CD_PARTNER_VERIFY_BASE_URL}"
+              ;;
+            *) echo "::error::未知回滚目标"; exit 1 ;;
+          esac
+          ca_file=$(mktemp "${RUNNER_TEMP}/cd-webhook-ca.XXXXXX.pem")
+          CA_FILE="${ca_file}" python3 -c 'import os; from pathlib import Path; Path(os.environ["CA_FILE"]).write_text(os.environ["CD_TLS_CA"] + "\n", encoding="utf-8")'
+          trap 'rm -f "${ca_file}"' EXIT
+
+          OIDC="$(curl --silent --show-error --fail \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zot" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          TOK="$(curl --silent --show-error --fail \
+            --user "x-access-token:${OIDC}" \
+            "https://oci.ktyun.cc/zot/auth/token?service=oci.ktyun.cc&scope=repository:ktaiorg/artex:pull" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))')"
+          [ -n "${TOK}" ] || { echo "::error::Zot 换票失败"; exit 1; }
+          echo "::add-mask::${OIDC}"
+          echo "::add-mask::${TOK}"
+          export REGISTRY_TOKEN="${TOK}"
+
+          resolved="${RUNNER_TEMP}/artex-rollback-resolved.json"
+          bound_receipt="${RUNNER_TEMP}/artex-rollback-source-receipt.json"
+          python3 scripts/resolve_artex_image.py \
+            --image "${INPUT_IMAGE}" \
+            --source-commit "${SOURCE_COMMIT}" \
+            --output-file "${resolved}"
+          fetch_args=(
+            --workflow "${source_workflow}"
+            --run-id "${RECEIPT_RUN_ID}"
+            --source-commit "${SOURCE_COMMIT}"
+            --target "${TARGET}"
+            --resolved-receipt "${resolved}"
+            --output-file "${bound_receipt}"
+          )
+          if [ -n "${RECEIPT_RUN_ATTEMPT}" ]; then
+            fetch_args+=(--run-attempt "${RECEIPT_RUN_ATTEMPT}")
+          fi
+          scripts/fetch_artex_receipt.sh "${fetch_args[@]}"
+          immutable_ref=$(jq -er '.image_ref' "${bound_receipt}")
+
+          body=$(jq -cn --arg target "${TARGET}" --arg image "${immutable_ref}" '{target: $target, image: $image}')
+          if ! code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --cacert "${ca_file}" --max-time 30 -X POST "${CD_WEBHOOK_URL}" \
+            -H "Authorization: Bearer ${OIDC}" \
+            -H 'Content-Type: application/json' --data "${body}"); then
+            echo "::error::rollback webhook TLS 调用失败"
+            exit 1
+          fi
+          echo "Rollback webhook (${TARGET}): ${code}"
+          [ "$code" = "202" ] || { echo "::error::rollback webhook 非 202"; exit 1; }
+          python3 scripts/verify_artex_deployment.py \
+            --base-url "${verify_url}" \
+            --ca-file "${ca_file}" \
+            --expected-commit "${SOURCE_COMMIT}" \
+            --timeout 300 \
+            --interval 5
+
+      - name: Create rollback receipt after health verification
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg source_revision "${{ inputs.source_commit }}" \
+            --arg target "${{ inputs.target }}" \
+            --arg source_receipt_run_id "${{ inputs.receipt_run_id }}" \
+            --arg source_receipt_run_attempt "${{ inputs.receipt_run_attempt }}" \
+            --arg rollback_run_id "${GITHUB_RUN_ID}" \
+            --arg rollback_run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg actor "${GITHUB_ACTOR}" \
+            --arg reason "${REASON}" \
+            --slurpfile source "${RUNNER_TEMP}/artex-rollback-source-receipt.json" \
+            '{
+              api_version: "delivery.kt/v1",
+              kind: "ImageRollbackReceipt",
+              repository: $repository,
+              source_revision: $source_revision,
+              target: $target,
+              image_ref: $source[0].image_ref,
+              image_digest: $source[0].image_digest,
+              source_receipt_run_id: $source_receipt_run_id,
+              source_receipt_run_attempt: $source_receipt_run_attempt,
+              rollback_run_id: $rollback_run_id,
+              rollback_run_attempt: $rollback_run_attempt,
+              actor: $actor,
+              reason: $reason,
+              verification: {status: "success"}
+            }' > "${RUNNER_TEMP}/artex-rollback-receipt.json"
+
+      - name: Upload rollback receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: artex-rollback-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_commit }}
+          path: ${{ runner.temp }}/artex-rollback-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          {
+            echo "### Rollback · Production"
+            echo "- target: \`${{ inputs.target }}\`"
+            echo "- source revision: \`${{ inputs.source_commit }}\`"
+            echo "- source receipt run: \`${{ inputs.receipt_run_id }}\`"
+            echo "- post-rollback HTTPS health: passed"
+            echo "- rebuild: not permitted"
+          } >> "${GITHUB_STEP_SUMMARY}"

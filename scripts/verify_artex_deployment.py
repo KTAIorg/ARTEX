@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
-"""Poll ARTEX health until the deployed full source revision matches."""
+"""Poll ARTEX health over pinned TLS until the full source revision matches."""
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import socket
+import ssl
 import sys
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 class DeploymentVerificationError(RuntimeError):
     pass
 
 
-def validate_base_url(base_url: str) -> str:
+class RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise DeploymentVerificationError(f"/api/health redirect refused: HTTP {code}")
+
+
+def validate_base_url(base_url: str, allow_http_loopback: bool = False) -> str:
     parsed = urlsplit(base_url)
     if (
         parsed.scheme not in {"http", "https"}
@@ -33,17 +40,47 @@ def validate_base_url(base_url: str) -> str:
         raise DeploymentVerificationError(
             "base URL must be an HTTP(S) origin without userinfo, path, query or fragment"
         )
+    if parsed.scheme == "http":
+        if not allow_http_loopback:
+            raise DeploymentVerificationError("production health checks require HTTPS")
+        try:
+            host = parsed.hostname
+            if host is None or not ipaddress.ip_address(host).is_loopback:
+                raise DeploymentVerificationError(
+                    "HTTP health checks are allowed only for explicit loopback smoke tests"
+                )
+        except ValueError as exc:
+            raise DeploymentVerificationError("HTTP health check host must be a loopback IP") from exc
     return base_url.rstrip("/")
 
 
-def read_health(base_url: str, timeout: float) -> dict[str, Any]:
-    url = validate_base_url(base_url) + "/api/health"
-    request = Request(url, headers={"User-Agent": "curl/8.4.0"})
+def read_health(
+    base_url: str,
+    timeout: float,
+    ca_file: str | None = None,
+    allow_http_loopback: bool = False,
+) -> dict[str, Any]:
+    url = validate_base_url(base_url, allow_http_loopback) + "/api/health"
+    handlers: list[Any] = [RejectRedirects()]
+    if url.startswith("https://"):
+        if not ca_file:
+            raise DeploymentVerificationError("--ca-file is required for HTTPS health checks")
+        try:
+            context = ssl.create_default_context(cafile=ca_file)
+        except (OSError, ssl.SSLError) as exc:
+            raise DeploymentVerificationError(f"could not load health CA: {exc}") from exc
+        context.check_hostname = True
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        handlers.append(HTTPSHandler(context=context))
+    opener = build_opener(*handlers)
+    request = Request(url, headers={"User-Agent": "artex-deployment-verifier/1.0"})
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
             if response.status != 200:
                 raise DeploymentVerificationError(f"/api/health returned HTTP {response.status}")
-            payload = response.read()
+            payload = response.read(1024 * 1024 + 1)
+            if len(payload) > 1024 * 1024:
+                raise DeploymentVerificationError("/api/health response is too large")
     except HTTPError as exc:
         raise DeploymentVerificationError(f"/api/health returned HTTP {exc.code}") from exc
     try:
@@ -66,8 +103,12 @@ def verify_deployment(
     timeout: float,
     interval: float,
     request_timeout: float = 10.0,
+    ca_file: str | None = None,
+    allow_http_loopback: bool = False,
 ) -> None:
-    root = validate_base_url(base_url)
+    root = validate_base_url(base_url, allow_http_loopback)
+    if root.startswith("https://") and not ca_file:
+        raise DeploymentVerificationError("--ca-file is required for HTTPS health checks")
     if not re.fullmatch(r"[0-9a-f]{40}", expected_commit):
         raise DeploymentVerificationError("expected commit must be a full lowercase hexadecimal SHA")
     deadline = time.monotonic() + timeout
@@ -80,13 +121,19 @@ def verify_deployment(
                 f"deployment did not reach {expected_commit} before timeout; {last_status}"
             )
         try:
-            health = read_health(root, min(request_timeout, max(remaining, 0.1)))
+            health = read_health(
+                root,
+                min(request_timeout, max(remaining, 0.1)),
+                ca_file,
+                allow_http_loopback,
+            )
         except (
             DeploymentVerificationError,
             URLError,
             TimeoutError,
             socket.timeout,
             ConnectionError,
+            ssl.SSLError,
         ) as exc:
             last_status = f"last health failure: {exc}"
         else:
@@ -113,6 +160,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=_non_negative, default=300.0)
     parser.add_argument("--interval", type=_non_negative, default=5.0)
     parser.add_argument("--request-timeout", type=_non_negative, default=10.0)
+    parser.add_argument("--ca-file")
+    parser.add_argument("--allow-http-loopback", action="store_true")
     args = parser.parse_args()
     try:
         verify_deployment(
@@ -121,6 +170,8 @@ def main() -> int:
             args.timeout,
             args.interval,
             args.request_timeout,
+            args.ca_file,
+            args.allow_http_loopback,
         )
     except DeploymentVerificationError as exc:
         print(f"deployment verification failed: {exc}", file=sys.stderr)

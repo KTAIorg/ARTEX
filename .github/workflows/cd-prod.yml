@@ -34,6 +34,7 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+      GO_TEST_SKIP: '^(TestStaticSedGeneratedInputAndBounds|TestGraphOverviewExpandsAssociatedCompanyScope|TestCVEEnrichCacheRoundtrip|TestInterceptApprovalFilters|TestCoreTaskLifecyclePG|TestInheritedActivityDetailAndRelationDeletion|TestLLMIdentityHTTPFlow|TestTaskMetadataPatchReturnsRenameAndPin|TestWorkerPoolSettingsRoundTrip)$|^TestCaptureApprovalLifecycle$/^(model_fallback|human_allow_tool_error|human_deny)$|^TestSideTaskArchiveVersions$/^[123]$'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,7 +68,14 @@ jobs:
           "${RUNNER_TEMP}/bin/actionlint" \
             .github/workflows/ci.yml \
             .github/workflows/cd-prod.yml \
-            .github/workflows/cd-partner-prod.yml
+            .github/workflows/cd-partner-prod.yml \
+            .github/workflows/rollback-prod.yml
+
+      - name: Shell script syntax and lint
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          shellcheck scripts/*.sh
 
       - name: Web build
         working-directory: web
@@ -111,24 +119,16 @@ jobs:
           app_pid=$!
           if ! python3 scripts/verify_artex_deployment.py \
             --base-url "http://127.0.0.1:${http_port}" \
+            --allow-http-loopback \
             --expected-commit "${GITHUB_SHA}" \
             --timeout 45 --interval 1 --request-timeout 2; then
             cat "${data_dir}/artex.log"
             exit 1
           fi
 
-      # 与 PR CI 一致：排除基线失败包，只跳过 Ubuntu 26 的一条 intercept 平台用例。
+      # 只跳过 base 已复现的精确失败节点，其余包和子测试全部禁用缓存执行。
       - name: Go regression tests
-        run: |
-          set -euo pipefail
-          packages=()
-          while IFS= read -r package; do
-            case "${package}" in
-              github.com/Autumn-27/artex/agent|github.com/Autumn-27/artex/db|github.com/Autumn-27/artex/server) ;;
-              *) packages+=("${package}") ;;
-            esac
-          done < <(go list ./...)
-          go test -p=1 -count=1 -skip '^TestStaticSedGeneratedInputAndBounds$' "${packages[@]}"
+        run: go test -p=1 -count=1 -skip "${GO_TEST_SKIP}" ./...
 
       - name: Delivery health regression test
         run: go test ./server -run '^TestHealthReportsFullBuildRevision$' -count=1
@@ -210,6 +210,7 @@ jobs:
           [ "$code" = "202" ] || { echo "::error::CD webhook 非 202"; exit 1; }
           python3 scripts/verify_artex_deployment.py \
             --base-url "${CD_VERIFY_BASE_URL}" \
+            --ca-file "${ca_file}" \
             --expected-commit "${GITHUB_SHA}" \
             --timeout 300 \
             --interval 5
@@ -220,7 +221,7 @@ jobs:
             echo "image_ref=${immutable_ref}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Create immutable build receipt
+      - name: Create immutable build receipt after health verification
         env:
           IMAGE_DIGEST: ${{ steps.release.outputs.digest }}
           IMAGE_REF: ${{ steps.release.outputs.image_ref }}
@@ -230,25 +231,34 @@ jobs:
           jq -n \
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg source_revision "${GITHUB_SHA}" \
+            --arg source_run_id "${GITHUB_RUN_ID}" \
+            --arg source_run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg deployment_run_id "${GITHUB_RUN_ID}" \
+            --arg deployment_run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg image_ref "${IMAGE_REF}" \
             --arg image_tag "${IMAGE_TAG}" \
             --arg image_digest "${IMAGE_DIGEST}" \
-            --arg target "artex-main" \
             '{
               api_version: "delivery.kt/v1",
               kind: "ImageDeploymentReceipt",
               repository: $repository,
               source_revision: $source_revision,
+              source_run_id: $source_run_id,
+              source_run_attempt: $source_run_attempt,
+              deployment_workflow: "cd-prod.yml",
+              deployment_run_id: $deployment_run_id,
+              deployment_run_attempt: $deployment_run_attempt,
               image_ref: $image_ref,
               image_tag: $image_tag,
               image_digest: $image_digest,
-              target: $target
+              target: "artex-main",
+              verification: {status: "success"}
             }' > "${RUNNER_TEMP}/artex-main-receipt.json"
 
       - name: Upload main deployment receipt
         uses: actions/upload-artifact@v7
         with:
-          name: artex-main-receipt-${{ github.sha }}
+          name: artex-main-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: ${{ runner.temp }}/artex-main-receipt.json
           if-no-files-found: error
           retention-days: 90
@@ -258,8 +268,9 @@ jobs:
           {
             echo "### CD · Production"
             echo "- source revision: \`${GITHUB_SHA}\`"
+            echo "- source run: \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- image: \`${{ steps.release.outputs.image_ref }}\`"
             echo "- tag: \`${{ steps.release.outputs.tag }}\`"
             echo "- verified target: \`artex-main\`"
-            echo "- partner: not deployed; use CD · Partner Production"
+            echo "- partner: not deployed; use CD · Partner Production with this run ID"
           } >> "${GITHUB_STEP_SUMMARY}"

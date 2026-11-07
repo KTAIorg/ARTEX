@@ -1,10 +1,18 @@
-# 仅晋级已存在且已在主站验收的不可变制品；禁止重新构建。
+# 仅晋级主站成功 receipt 绑定的不可变制品；禁止重新构建。
 # Action 主版本基线：2026-11-07 实查 GitHub Releases。
 name: CD · Partner Production
 
 on:
   workflow_dispatch:
     inputs:
+      source_run_id:
+        description: "已成功验收主站的 CD · Production run ID"
+        required: true
+        type: string
+      source_run_attempt:
+        description: "可选：run attempt；同名多次成功 attempt 必须明确指定"
+        required: false
+        type: string
       image:
         description: "oci.ktyun.cc/ktaiorg/artex:prod-sha-<short10> 或同仓库 @sha256:<digest>"
         required: true
@@ -15,6 +23,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
@@ -24,6 +33,7 @@ concurrency:
 
 jobs:
   promote-partner:
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production-partner
@@ -53,11 +63,13 @@ jobs:
             exit 1
           }
 
-      - name: Resolve existing artifact and verify partner deployment
-        id: promote
+      - name: Bind main receipt, resolve artifact and verify partner deployment
         env:
           INPUT_IMAGE: ${{ inputs.image }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+          GH_TOKEN: ${{ github.token }}
           CD_WEBHOOK_URL: ${{ vars.CD_WEBHOOK_URL }}
           CD_TLS_CA: ${{ secrets.CD_TLS_CA }}
           CD_MAIN_VERIFY_BASE_URL: ${{ vars.CD_MAIN_VERIFY_BASE_URL }}
@@ -94,15 +106,29 @@ jobs:
           echo "::add-mask::${TOK}"
           export REGISTRY_TOKEN="${TOK}"
 
-          receipt="${RUNNER_TEMP}/artex-partner-receipt.json"
+          resolved="${RUNNER_TEMP}/artex-resolved-image.json"
+          bound_receipt="${RUNNER_TEMP}/artex-main-bound-receipt.json"
           python3 scripts/resolve_artex_image.py \
             --image "${INPUT_IMAGE}" \
             --source-commit "${SOURCE_COMMIT}" \
-            --output-file "${receipt}"
-          immutable_ref=$(jq -r '.image_ref' "${receipt}")
+            --output-file "${resolved}"
+          fetch_args=(
+            --workflow cd-prod.yml
+            --run-id "${SOURCE_RUN_ID}"
+            --source-commit "${SOURCE_COMMIT}"
+            --target artex-main
+            --resolved-receipt "${resolved}"
+            --output-file "${bound_receipt}"
+          )
+          if [ -n "${SOURCE_RUN_ATTEMPT}" ]; then
+            fetch_args+=(--run-attempt "${SOURCE_RUN_ATTEMPT}")
+          fi
+          scripts/fetch_artex_receipt.sh "${fetch_args[@]}"
+          immutable_ref=$(jq -er '.image_ref' "${bound_receipt}")
 
           python3 scripts/verify_artex_deployment.py \
             --base-url "${CD_MAIN_VERIFY_BASE_URL}" \
+            --ca-file "${ca_file}" \
             --expected-commit "${SOURCE_COMMIT}" \
             --timeout 60 \
             --interval 5
@@ -119,14 +145,29 @@ jobs:
           [ "$code" = "202" ] || { echo "::error::CD webhook 非 202"; exit 1; }
           python3 scripts/verify_artex_deployment.py \
             --base-url "${CD_PARTNER_VERIFY_BASE_URL}" \
+            --ca-file "${ca_file}" \
             --expected-commit "${SOURCE_COMMIT}" \
             --timeout 300 \
             --interval 5
 
+      - name: Create partner deployment receipt after health verification
+        run: |
+          set -euo pipefail
+          jq \
+            --arg deployment_run_id "${GITHUB_RUN_ID}" \
+            --arg deployment_run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '.target = "artex-partner"
+             | .deployment_workflow = "cd-partner-prod.yml"
+             | .deployment_run_id = $deployment_run_id
+             | .deployment_run_attempt = $deployment_run_attempt
+             | .verification = {status: "success"}' \
+            "${RUNNER_TEMP}/artex-main-bound-receipt.json" \
+            > "${RUNNER_TEMP}/artex-partner-receipt.json"
+
       - name: Upload partner deployment receipt
         uses: actions/upload-artifact@v7
         with:
-          name: artex-partner-receipt-${{ inputs.source_commit }}
+          name: artex-partner-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.source_commit }}
           path: ${{ runner.temp }}/artex-partner-receipt.json
           if-no-files-found: error
           retention-days: 90
@@ -136,8 +177,9 @@ jobs:
           {
             echo "### CD · Partner Production"
             echo "- source revision: \`${{ inputs.source_commit }}\`"
+            echo "- source main run: \`${{ inputs.source_run_id }}\`"
             echo "- input image: \`${{ inputs.image }}\`"
-            echo "- main verification: passed before promotion"
+            echo "- main receipt binding: passed before promotion"
             echo "- verified target: \`artex-partner\`"
             echo "- rebuild: not permitted"
           } >> "${GITHUB_STEP_SUMMARY}"

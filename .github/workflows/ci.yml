@@ -31,6 +31,7 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+      GO_TEST_SKIP: '^(TestStaticSedGeneratedInputAndBounds|TestGraphOverviewExpandsAssociatedCompanyScope|TestCVEEnrichCacheRoundtrip|TestInterceptApprovalFilters|TestCoreTaskLifecyclePG|TestInheritedActivityDetailAndRelationDeletion|TestLLMIdentityHTTPFlow|TestTaskMetadataPatchReturnsRenameAndPin|TestWorkerPoolSettingsRoundTrip)$|^TestCaptureApprovalLifecycle$/^(model_fallback|human_allow_tool_error|human_deny)$|^TestSideTaskArchiveVersions$/^[123]$'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,7 +65,33 @@ jobs:
           "${RUNNER_TEMP}/bin/actionlint" \
             .github/workflows/ci.yml \
             .github/workflows/cd-prod.yml \
-            .github/workflows/cd-partner-prod.yml
+            .github/workflows/cd-partner-prod.yml \
+            .github/workflows/rollback-prod.yml
+
+      - name: Shell script syntax and lint
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          shellcheck scripts/*.sh
+
+      - name: Production health TLS reachability
+        env:
+          HEALTH_CA: ${{ vars.CD_HEALTH_CA_PUBLIC }}
+          MAIN_URL: ${{ vars.CD_MAIN_VERIFY_BASE_URL }}
+          PARTNER_URL: ${{ vars.CD_PARTNER_VERIFY_BASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${HEALTH_CA:?CD_HEALTH_CA_PUBLIC repository variable is required}"
+          : "${MAIN_URL:?CD_MAIN_VERIFY_BASE_URL repository variable is required}"
+          : "${PARTNER_URL:?CD_PARTNER_VERIFY_BASE_URL repository variable is required}"
+          ca_file=$(mktemp "${RUNNER_TEMP}/health-ca.XXXXXX.pem")
+          trap 'rm -f "${ca_file}"' EXIT
+          CA_FILE="${ca_file}" python3 -c 'import os; from pathlib import Path; Path(os.environ["CA_FILE"]).write_text(os.environ["HEALTH_CA"] + "\n", encoding="utf-8")'
+          for base_url in "${MAIN_URL}" "${PARTNER_URL}"; do
+            curl --silent --show-error --fail --cacert "${ca_file}" \
+              --connect-timeout 5 --max-time 10 "${base_url}/api/health" \
+              | jq -e '.ok == true and .service == "artex" and (.version | length > 0)'
+          done
 
       - name: Web build
         working-directory: web
@@ -112,25 +139,16 @@ jobs:
           app_pid=$!
           if ! python3 scripts/verify_artex_deployment.py \
             --base-url "http://127.0.0.1:${http_port}" \
+            --allow-http-loopback \
             --expected-commit "${SOURCE_COMMIT}" \
             --timeout 45 --interval 1 --request-timeout 2; then
             cat "${data_dir}/artex.log"
             exit 1
           fi
 
-      # main f2c6f1e 的 agent/db/server 既有测试在独立 PG 串行执行仍失败；
-      # Ubuntu 26 另有一条 intercept 平台相关既有失败，只跳过该用例，其余测试禁用缓存执行。
+      # 只跳过 base 已复现的精确失败节点，其余包和子测试全部禁用缓存执行。
       - name: Go regression tests
-        run: |
-          set -euo pipefail
-          packages=()
-          while IFS= read -r package; do
-            case "${package}" in
-              github.com/Autumn-27/artex/agent|github.com/Autumn-27/artex/db|github.com/Autumn-27/artex/server) ;;
-              *) packages+=("${package}") ;;
-            esac
-          done < <(go list ./...)
-          go test -p=1 -count=1 -skip '^TestStaticSedGeneratedInputAndBounds$' "${packages[@]}"
+        run: go test -p=1 -count=1 -skip "${GO_TEST_SKIP}" ./...
 
       - name: Delivery health regression test
         run: go test ./server -run '^TestHealthReportsFullBuildRevision$' -count=1
