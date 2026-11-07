@@ -61,10 +61,14 @@ describe("CVE 同步 API", () => {
     expect(headers.get("X-Identity-Token")).toBe("identity-test-token");
   });
 
-  it("用无请求体 POST 触发异步同步并接受 202", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ accepted: true, status: syncStatus("idle") }, 202));
+  it("用无请求体 POST 触发异步同步并接受本轮 running 202", async () => {
+    const running = { ...syncStatus("running"), started_at: "2026-11-07T04:01:00Z" };
+    fetchMock.mockResolvedValue(jsonResponse({ accepted: true, status: running }, 202));
 
-    await expect(vuln.triggerCveSync()).resolves.toMatchObject({ accepted: true, status: { status: "idle" } });
+    await expect(vuln.triggerCveSync()).resolves.toMatchObject({
+      accepted: true,
+      status: { status: "running", started_at: "2026-11-07T04:01:00Z" },
+    });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/vuln/cve-catalog/sync");
