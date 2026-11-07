@@ -413,6 +413,7 @@ interface TaskTemplateControlsProps {
   onVariablesChange: (variables: Record<string, string>) => void;
   onSelectedTemplateIDChange: (id: number | null) => void;
   onApply: (template: TaskTemplate) => void;
+  onAppliedTemplateUpdated: (template: TaskTemplate) => void;
   portalContainer?: React.RefObject<HTMLElement | null>;
 }
 
@@ -428,6 +429,7 @@ export function TaskTemplateControls({
   onVariablesChange,
   onSelectedTemplateIDChange,
   onApply,
+  onAppliedTemplateUpdated,
   portalContainer,
 }: TaskTemplateControlsProps) {
   const [templates, setTemplates] = React.useState<TaskTemplate[]>([]);
@@ -505,6 +507,7 @@ export function TaskTemplateControls({
 
   const upsertTemplate = (template: TaskTemplate) => {
     setTemplates((current) => [template, ...current.filter((item) => item.id !== template.id)]);
+    if (selectedTemplateID === template.id) onAppliedTemplateUpdated(template);
   };
 
   const deleteTemplate = (id: number) => {

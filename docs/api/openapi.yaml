@@ -294,6 +294,11 @@ components:
           maximum: 50
     CreateTaskRequest:
       type: object
+      description: >-
+        Direct creation requires non-empty description and goal. With template_id, the rendered
+        template supplies description, goal, remark, category_id, worker_count and intercept_rules;
+        top-level values for those fields are ignored. Use template_overrides to override template
+        defaults (precedence: template_overrides > rendered template > top-level fields).
       properties:
         name:
           type: string
@@ -360,6 +365,11 @@ components:
           description: Existing schedule payload; nested fields are outside this partial backfill.
       anyOf:
         - required: [description, goal]
+          properties:
+            description:
+              minLength: 1
+            goal:
+              minLength: 1
         - required: [template_id]
     Task:
       type: object

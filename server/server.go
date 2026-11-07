@@ -1698,7 +1698,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if strings.TrimSpace(req.Description) == "" {
-		req.Description = "未命名任务"
+		writeErr(w, 400, "description 为必填")
+		return
+	}
+	if strings.TrimSpace(req.Goal) == "" {
+		writeErr(w, 400, "goal 为必填")
+		return
 	}
 	if len(req.LLMProfileIDs) == 0 && req.LLMProfileID != nil {
 		req.LLMProfileIDs = []int64{*req.LLMProfileID}

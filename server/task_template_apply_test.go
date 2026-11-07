@@ -101,6 +101,11 @@ func TestCreateTaskFromTemplateHTTPReusesRendersAndOverrides(t *testing.T) {
 	}
 
 	code, second := do(map[string]any{
+		"description":        "顶层描述不得覆盖模板",
+		"goal":               "顶层目标不得覆盖模板或嵌套 override",
+		"remark":             "顶层备注不得覆盖模板或嵌套 override",
+		"category_id":        123,
+		"worker_count":       50,
 		"template_id":        template.ID,
 		"template_variables": variables("https://two.example", "CVE-2026-0002", "two.example"),
 		"template_overrides": map[string]any{
@@ -113,7 +118,8 @@ func TestCreateTaskFromTemplateHTTPReusesRendersAndOverrides(t *testing.T) {
 	secondID, _ := second["id"].(string)
 	t.Cleanup(func() { _, _ = m.DeleteTask(secondID, DeleteTaskOptions{}) })
 	if second["description"] != "验证 https://two.example 的 CVE-2026-0002；资产 two.example" ||
-		second["goal"] != "覆盖后的目标" || second["remark"] != "" || second["worker_count"] != float64(0) {
+		second["goal"] != "覆盖后的目标" || second["remark"] != "" || second["worker_count"] != float64(0) ||
+		second["category_id"] != nil {
 		t.Fatalf("unexpected second task: %+v", second)
 	}
 
@@ -137,5 +143,14 @@ func TestCreateTaskFromTemplateHTTPReusesRendersAndOverrides(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("variables without template status=%d body=%v", code, withoutTemplate)
+	}
+	for name, body := range map[string]map[string]any{
+		"description": {"goal": "direct"},
+		"goal":        {"description": "direct"},
+	} {
+		code, response := do(body)
+		if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(response["error"]), name) {
+			t.Fatalf("direct create without %s status=%d body=%v", name, code, response)
+		}
 	}
 }

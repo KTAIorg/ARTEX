@@ -167,6 +167,7 @@ import {
   type SortDirection,
   useStoredSortPreference,
 } from "@/lib/sort-preference";
+import { reconcileAppliedTaskTemplate } from "@/lib/task-template-state";
 import type {
   AssetInterceptRuleInput,
   ChatAttachment,
@@ -4155,6 +4156,11 @@ function CreateTaskSheet({
                   template.worker_count ? String(template.worker_count) : "",
                 );
                 setUploadCount(0);
+              }}
+              onAppliedTemplateUpdated={(template) => {
+                const synced = reconcileAppliedTaskTemplate(appliedTemplate, template, templateVariables);
+                setAppliedTemplate(synced.template);
+                setTemplateVariables(synced.variables);
               }}
               portalContainer={sheetContentRef}
             />
