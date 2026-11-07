@@ -167,6 +167,11 @@ import {
   type SortDirection,
   useStoredSortPreference,
 } from "@/lib/sort-preference";
+import {
+  buildTaskTemplateCreatePayload,
+  reconcileAppliedTaskTemplate,
+  taskTemplateFormFields,
+} from "@/lib/task-template-state";
 import type {
   AssetInterceptRuleInput,
   ChatAttachment,
@@ -179,11 +184,13 @@ import type {
   TaskArchiveState,
   TaskCategory,
   TaskStatus,
+  TaskTemplate,
 } from "@/lib/types";
 import {
   MAX_TASK_REMARK_RUNES,
   MAX_TASK_WORKER_COUNT,
   parseWorkerCountInput,
+  taskTemplateVariableNames,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { clearVulnWorksetDraft, readVulnWorksetDraft, vuln } from "@/lib/vuln";
@@ -3893,6 +3900,8 @@ function CreateTaskSheet({
   const [selectedTemplateID, setSelectedTemplateID] = React.useState<
     number | null
   >(null);
+  const [appliedTemplate, setAppliedTemplate] = React.useState<TaskTemplate | null>(null);
+  const [templateVariables, setTemplateVariables] = React.useState<Record<string, string>>({});
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [companies, setCompanies] = React.useState<Company[]>([]);
   const [sourceTaskIDs, setSourceTaskIDs] = React.useState<string[]>([]);
@@ -3993,6 +4002,21 @@ function CreateTaskSheet({
       toast.error(`Worker 运行数量必须是 0-${MAX_TASK_WORKER_COUNT} 的整数`);
       return;
     }
+    if (appliedTemplate) {
+      const missing = taskTemplateVariableNames(appliedTemplate).filter(
+        (variable) => !(templateVariables[variable] ?? "").trim(),
+      );
+      if (missing.length > 0) {
+        toast.error(`请填写模板变量：${missing.join("、")}`);
+        return;
+      }
+    }
+    const templatePayload = buildTaskTemplateCreatePayload(
+      appliedTemplate,
+      templateVariables,
+      { description, goal, remark, categoryID, workerCount, interceptRules },
+      workerCountNum,
+    );
     setCreating(true);
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
@@ -4000,10 +4024,7 @@ function CreateTaskSheet({
         Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
       const task = await api.createTask({
         name: name.trim(),
-        remark: remark.trim(),
-        categoryId: categoryID,
-        description: description.trim(),
-        goal: goal.trim(),
+        ...templatePayload,
         llmProfileIds: llmProfileIDs.map(Number),
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
@@ -4011,11 +4032,7 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
-        workerCount: workerCountNum,
         schedule: scheduleEnabled ? { ...schedule, task_ids: [] } : undefined,
-        interceptRules: interceptRules
-          .map((r) => ({ ...r, pattern: r.pattern.trim() }))
-          .filter((r) => r.pattern !== ""),
       });
       toast.success("任务已创建");
       // 漏洞库/CVE「下发任务」带入的资产快照：任务建好后挂到新任务上；失败不阻塞任务创建结果。
@@ -4038,6 +4055,8 @@ function CreateTaskSheet({
       setDescription("");
       setGoal("");
       setSelectedTemplateID(null);
+      setAppliedTemplate(null);
+      setTemplateVariables({});
       setSourceTaskIDs([]);
       setCompanyIDs([]);
       setLLMProfileIDs([]);
@@ -4101,16 +4120,42 @@ function CreateTaskSheet({
               interceptRules={interceptRules}
               workerCount={workerCount}
               selectedTemplateID={selectedTemplateID}
-              onSelectedTemplateIDChange={setSelectedTemplateID}
+              variables={templateVariables}
+              onVariablesChange={setTemplateVariables}
+              onSelectedTemplateIDChange={(id) => {
+                setSelectedTemplateID(id);
+                if (id == null) {
+                  setAppliedTemplate(null);
+                  setTemplateVariables({});
+                }
+              }}
               onApply={(template) => {
-                setDescription(template.description);
-                setGoal(template.goal);
-                setRemark(template.remark ?? "");
-                setCategoryID(template.category_id ?? undefined);
-                setInterceptRules(template.intercept_rules ?? []);
-                setWorkerCount(
-                  template.worker_count ? String(template.worker_count) : "",
+                const fields = taskTemplateFormFields(template);
+                setAppliedTemplate(template);
+                setTemplateVariables({});
+                setDescription(fields.description);
+                setGoal(fields.goal);
+                setRemark(fields.remark);
+                setCategoryID(fields.categoryID);
+                setInterceptRules(fields.interceptRules);
+                setWorkerCount(fields.workerCount);
+                setUploadCount(0);
+              }}
+              onAppliedTemplateUpdated={(template) => {
+                const synced = reconcileAppliedTaskTemplate(
+                  appliedTemplate,
+                  template,
+                  templateVariables,
+                  { description, goal, remark, categoryID, workerCount, interceptRules },
                 );
+                setAppliedTemplate(synced.template);
+                setTemplateVariables(synced.variables);
+                setDescription(synced.fields.description);
+                setGoal(synced.fields.goal);
+                setRemark(synced.fields.remark);
+                setCategoryID(synced.fields.categoryID);
+                setInterceptRules(synced.fields.interceptRules);
+                setWorkerCount(synced.fields.workerCount);
                 setUploadCount(0);
               }}
               portalContainer={sheetContentRef}

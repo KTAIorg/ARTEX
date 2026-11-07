@@ -27,7 +27,9 @@ web/public/demo-version.json
 *.swo
 
 # docs
-/docs/
+/docs/*
+!/docs/api/
+!/docs/api/openapi.yaml
 
 # os
 .DS_Store

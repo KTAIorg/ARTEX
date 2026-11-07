@@ -104,6 +104,7 @@ import type {
   TaskSchedule,
   TaskScopeRow,
   TaskTemplate,
+  TaskTemplateOverrides,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -336,6 +337,9 @@ export const api = {
     categoryId?: number;
     description: string;
     goal: string;
+    templateId?: number;
+    templateVariables?: Record<string, string>;
+    templateOverrides?: TaskTemplateOverrides;
     llmProfileIds?: number[];
     sourceTaskIds?: string[];
     companyIds?: number[];
@@ -353,6 +357,9 @@ export const api = {
       category_id: input.categoryId ?? null,
       description: input.description,
       goal: input.goal,
+      template_id: input.templateId,
+      template_variables: input.templateVariables,
+      template_overrides: input.templateOverrides,
       llm_profile_ids: input.llmProfileIds ?? [],
       source_task_ids: input.sourceTaskIds ?? [],
       company_ids: input.companyIds ?? [],

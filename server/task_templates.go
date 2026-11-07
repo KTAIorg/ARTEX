@@ -97,7 +97,7 @@ func validateTaskTemplateRequest(req taskTemplateRequest) error {
 
 func writeTaskTemplateErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, db.ErrTaskTemplateInvalid):
+	case errors.Is(err, db.ErrTaskTemplateInvalid), errors.Is(err, db.ErrTaskTemplateRender):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, db.ErrTaskTemplateNameConflict):
 		writeErr(w, http.StatusConflict, "模板名称已存在")
